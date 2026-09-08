@@ -1,9 +1,7 @@
 //
 // Created by yangb on 2026/9/1.
 //
-
-#ifndef CPP_BACKEND_SERVER_TCPSERVER_H
-#define CPP_BACKEND_SERVER_TCPSERVER_H
+#include "common/UniqueFd.h"
 
 #pragma once
 #include <string>
@@ -12,16 +10,16 @@ public:
     TcpServer(const std::string & ip,int port);
     ~TcpServer();
     void start();
+    UniqueFd acceptConnection();
 private:
     void createSocket();
     void bindSocket();
     void listenSocket();
-    void acceptLoop();
-private:
+    // void acceptLoop();
+
     std::string ip_;
     int port_;
-    int server_fd_;
+    UniqueFd server_fd_;
 };
 
 
-#endif //CPP_BACKEND_SERVER_TCPSERVER_H
