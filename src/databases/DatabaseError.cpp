@@ -4,4 +4,16 @@
 
 #include "databases/DatabaseError.h"
 
-DatabaseError::DatabaseError(const std::string& message): std::runtime_error(message){}
+DatabaseError::DatabaseError(DatabaseErrorKind kind, std::string code, std::string message)
+:kind_(kind), code_(code), std::runtime_error(message){};
+DatabaseErrorKind
+DatabaseError::kind() const noexcept
+{
+    return kind_;
+}
+
+std::string_view
+DatabaseError::code() const noexcept
+{
+    return code_;
+}

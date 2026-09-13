@@ -12,200 +12,59 @@
 #include "server/Connection.h"
 #include "server/TcpServer.h"
 #include "service/UserService.h"
+#include "http/HttpResponseGenerator.h"
+#include <cstdlib>
+#include "http/HttpSession.h"
 
 namespace {
-
-void sendTextResponse(
-    Connection& connection,
-    int statusCode,
-    const std::string& reasonPhrase,
-    const std::string& body
-)
-{
-    const std::string response =
-        "HTTP/1.1 " +
-        std::to_string(statusCode) +
-        " " +
-        reasonPhrase +
-        "\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: " +
-        std::to_string(body.size()) +
-        "\r\n"
-        "Connection: close\r\n"
-        "\r\n" +
-        body;
-
-    connection.sendAll(response);
-}
-
-void handleConnection(
-    Connection& connection,
-    const Router& router
-)
-{
-    HttpParse parser;
-
-    while (connection.is_open()) {
-        const ssize_t bytesRead =
-            connection.read();
-
-        if (bytesRead == 0) {
-            return;
-        }
-
-        if (bytesRead < 0) {
-            throw std::runtime_error(
-                "Failed to read from client"
-            );
-        }
-
-        const ParseResult result =
-            parser.parse(
-                connection.inputBuffer()
-            );
-
-        if (result.consumed > 0) {
-            connection.consumeInput(
-                result.consumed
-            );
-        }
-
-        if (
-            result.status ==
-            ParseStatus::NeedMoreData
-        ) {
-            continue;
-        }
-
-        if (
-            result.status ==
-            ParseStatus::Error
-        ) {
-            sendTextResponse(
-                connection,
-                400,
-                "Bad Request",
-                "Bad Request"
-            );
-
-            return;
-        }
-
-        if (
-            result.status ==
-            ParseStatus::Complete
-        ) {
-            HttpRequest request =
-                parser.takeRequest();
-
-            const bool matched =
-                router.route(request);
-
-            if (!matched) {
-                sendTextResponse(
-                    connection,
-                    404,
-                    "Not Found",
-                    "Route not found"
-                );
-
-                return;
-            }
-
-            sendTextResponse(
-                connection,
-                200,
-                "OK",
-                "Request handled successfully"
-            );
-
-            return;
-        }
-    }
-}
-
 } // namespace
 
 int main()
 {
     try {
-        const std::string databaseUrl =
-            "host=127.0.0.1 "
-            "port=5432 "
-            "dbname=?? "
-            "user=?? "
-            "password=??";
-
-        DatabaseConnection database{
-            databaseUrl
-        };
-
-        UserRepository userRepository{
-            database
-        };
-
-        UserService userService{
-            userRepository
-        };
-
-        UserHandler userHandler{
-            userService
-        };
-
+        //读取配置
+        const char* databaseUrl = std::getenv("DATABASE_URL");
+        if (databaseUrl == nullptr || databaseUrl[0] == '\0') {
+            throw std::runtime_error("DATABASE_URL environment variable is not set or is empty");
+        }
+        //组装组件
+        DatabaseConnection database{databaseUrl};
+        UserRepository userRepository{database};
+        UserService userService{userRepository};
+        UserHandler userHandler{userService};
         Router router;
-
+        //注册路由，如果方法为Get,路径为path,就调用userHanler.getUser方法
         router.addRoute(
             HttpMethod::GET,
             "/user",
-            [&userHandler](
-                const HttpRequest& request
-            ) {
-                userHandler.getUser(request);
+            [&userHandler](const HttpRequest& request)->HttpResponse {
+                //返回一个HttpResponse
+                return userHandler.getUser(request);
             }
         );
-
-        TcpServer server{
-            "0.0.0.0",
-            8080
-        };
-
+        //启动服务
+        TcpServer server{"0.0.0.0",8080};
         server.start();
-
         std::cout
             << "Server listening on port 8080\n";
-
-        while (true) {
-            UniqueFd clientFd =
-                server.acceptConnection();
-
+        while (true) {UniqueFd clientFd =server.acceptConnection();
             if (!clientFd.valid()) {
                 continue;
             }
-
-            Connection connection{
-                std::move(clientFd)
-            };
-
+            Connection connection{std::move(clientFd)};
+            HttpSession session(std::move(connection),router);
             try {
-                handleConnection(
-                    connection,
-                    router
-                );
+                session.HandleHttpSession();
             } catch (const std::exception& error) {
                 std::cerr
                     << "Connection error: "
                     << error.what()
                     << '\n';
 
-                if (connection.is_open()) {
+                if (session.is_open()) {
                     try {
-                        sendTextResponse(
-                            connection,
-                            500,
-                            "Internal Server Error",
-                            "Internal Server Error"
-                        );
+                        HttpResponse response=ErrorResponseMaker(HttpStatus::Internal_Server_Error,"Internal Server Error","Internal Server Error");
+                        session.sendAll(response);
                     } catch (...) {
                     }
                 }
@@ -216,7 +75,6 @@ int main()
             << "Server error: "
             << error.what()
             << '\n';
-
         return 1;
     }
 }

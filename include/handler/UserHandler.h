@@ -8,13 +8,16 @@
 
 #include "http/HttpRequest.h"
 #include "service/UserService.h"
+#include "nlohmann/json.hpp"
+#include "http/HttpResponse.h"
 
 class UserHandler {
 public:
     explicit UserHandler(UserService& userService);
-    void getUser(const HttpRequest& request);
+    HttpResponse getUser(const HttpRequest& request);
 
 private:
+    //Handler 保存一个service示例
     UserService& userService_;
 };
 

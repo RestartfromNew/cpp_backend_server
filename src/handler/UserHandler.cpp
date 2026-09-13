@@ -4,50 +4,44 @@
 
 #include "../../include/handler/UserHandler.h"
 #include "handler/UserHandler.h"
+#include "nlohmann/json.hpp"
 
-#include <iostream>
-#include <stdexcept>
 
-UserHandler::UserHandler(
-    UserService& userService
-)
-    : userService_(userService)
+
+UserHandler::UserHandler(UserService& userService): userService_(userService){}
+
+HttpResponse UserHandler::getUser(const HttpRequest& request)
 {
-}
+    const auto emailHeader =request.headers.find("X-User-Email");
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
 
-void UserHandler::getUser(
-    const HttpRequest& request
-)
-{
-    const auto emailHeader =
-        request.headers.find("X-User-Email");
 
-    if (emailHeader == request.headers.end()) {
-        throw std::invalid_argument(
-            "Missing X-User-Email header"
-        );
-    }
 
-    const std::string& email =
-        emailHeader->second;
+    // 请求缺少必要参数。
+    if (emailHeader == request.headers.end() ||emailHeader->second.empty()) {
+       response.status=HttpStatus::Bad_Request;
+        response=ErrorResponseMaker(HttpStatus::Bad_Request,"missing_user_email","Missing X-User-Email header");
+        return response;
+        }
 
-    auto user =
-        userService_.findUserByEmail(email);
+    const std::string& email = emailHeader->second;
 
-    // 暂时用控制台输出验证链路。
-    // 将来这里改成返回 HttpResponse。
+    auto user = userService_.findUserByEmail(email);
+
+    // 查询成功，但没有对应用户。
     if (!user) {
-        std::cout
-            << "User not found: "
-            << email
-            << '\n';
-
-        return;
+       response=ErrorResponseMaker(HttpStatus::Not_Found,"user_not_found","User not found");
+        return response;
     }
 
-    std::cout
-        << "User found\n"
-        << "id: " << user->id << '\n'
-        << "username: " << user->username << '\n'
-        << "email: " << user->email << '\n';
+    // 查询到用户。
+    response.status=HttpStatus::Ok;
+    nlohmann::json body;
+    body["id"] = user->id;
+    body["email"] = user->email;
+    body["username"] = user->username;
+
+    response.body = body.dump();
+    return response;
 }

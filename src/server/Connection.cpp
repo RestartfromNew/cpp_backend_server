@@ -9,7 +9,6 @@
 Connection::Connection(UniqueFd&& connection) noexcept:fd_(std::move(connection)) {
 
 }
-
 ssize_t Connection::read() {
     char buffer[1024]{};
     while (true) {
@@ -73,7 +72,7 @@ std::string_view Connection::input()const noexcept{
     return input_buffer_;
 }
 bool Connection::is_open()const noexcept {
-    return state_;
+    return fd_.valid() && state_;
 }
 int Connection::fd()const noexcept {
     return fd_.get();
@@ -86,31 +85,25 @@ void Connection::sendAll(std::string_view data) {
     write(data);
     while (!output_buffer_.empty()) {
         ssize_t n = flush();
-
         if (n > 0) {
             continue;
         }
-
         if (n == 0) {
             throw std::runtime_error("socket closed while sending");
         }
-
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             continue;
         }
-
         throw std::runtime_error("send failed");
     }
 }
 std::string_view Connection::inputBuffer() const {
     return input_buffer_;
 }
-
 void Connection::consumeInput(std::size_t n) {
     if (n >= input_buffer_.size()) {
         input_buffer_.clear();
         return;
     }
-
     input_buffer_.erase(0, n);
 }

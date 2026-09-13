@@ -17,7 +17,7 @@ class Connection {
     Connection(const Connection& other)=delete;
     Connection& operator=(const Connection& other)=delete;
     Connection(Connection&&) noexcept = default;
-    Connection& operator=(Connection&&) noexcept = default;
+    Connection& operator=(Connection&&) noexcept=default;
 
     ssize_t read();
     void write(std::string_view data);

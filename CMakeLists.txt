@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(PostgreSQL REQUIRED)
 set(hiredis_DIR "/usr/lib/x86_64-linux-gnu/cmake/Hiredis")
 find_package(redis++ CONFIG REQUIRED)
+find_package(nlohmann_json REQUIRED)
 add_executable(cpp_backend_server src/main.cpp
         src/server/TcpServer.cpp
         include/server/TcpServer.h
@@ -36,6 +37,12 @@ add_executable(cpp_backend_server src/main.cpp
         include/handler/Router.h
         src/handler/UserHandler.cpp
         include/handler/UserHandler.h
+        include/http/HttpResponse.h
+        src/http/HttpResponseGenerator.cpp
+        include/http/HttpResponseGenerator.h
+        src/http/HttpResponse.cpp
+        src/http/HttpSession.cpp
+        include/http/HttpSession.h
 )
 target_include_directories(
         cpp_backend_server
@@ -48,6 +55,7 @@ target_link_libraries(
         PRIVATE
         PostgreSQL::PostgreSQL
         redis++::redis++
+        nlohmann_json::nlohmann_json
 )
 target_compile_options(
         cpp_backend_server

@@ -67,6 +67,15 @@ enum class ParseStatus {
      */
     Error
 };
+enum class ParseError {
+    InvalidRequestLine,
+    InvalidHeader,
+    InvalidBody,
+    BodyTooLarge,
+    None,
+    UnsupportedMethod,
+    UnsupportedVersion,
+};
 
 /**
  * @brief 一次调用parse()的结果
@@ -85,6 +94,7 @@ struct ParseResult {
      * consumed 包含完整请求行的长度，不包含未完成的 Header。
      */
     std::size_t consumed;
+    ParseError error{ParseError::None};
 };
 
 enum class StepStatus {
