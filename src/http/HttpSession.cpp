@@ -8,6 +8,7 @@ HttpSession::HttpSession(Connection &&connection, Router &router) :connection_(s
 }
 void HttpSession::HandleHttpSession() {
     HttpResponseGenerator generator;
+    HttpResponse response;
     while (connection_.is_open()) {
         const ssize_t bytesRead =connection_.read();
         if (bytesRead == 0) {
@@ -27,7 +28,7 @@ void HttpSession::HandleHttpSession() {
             continue;
         }
         if (result.status == ParseStatus::Error) {
-            HttpResponse response = ErrorResponseMaker(HttpStatus::Bad_Request,"invalid_http_request","Invalid HTTP request");
+            response = ErrorResponseMaker(HttpStatus::Bad_Request,"invalid_http_request","Invalid HTTP request");
 
             response.headers["Connection"] = "close";
             connection_.sendAll(generator.generateHttpResponse(response));
@@ -37,23 +38,45 @@ void HttpSession::HandleHttpSession() {
         if (result.status == ParseStatus::Complete) {
             HttpRequest request = parser_.takeRequest();
             try {
-                HttpResponse response = router_.route(request);
+                response = router_.route(request);
                 response.headers["Connection"] = "close";
                 std::string bytes =generator.generateHttpResponse(response);
                 connection_.sendAll(bytes);
                 return;
             }
             catch (DatabaseError &error) {
-                HttpResponse response;
-                if (error.kind()==DatabaseErrorKind::Connection) {
-                    response = ErrorResponseMaker(HttpStatus::Service_Unavailable,"service_unavailable","Service Unavailable");
+                switch (error.kind()) {
+                    case DatabaseErrorKind::Connection:
+                        response = ErrorResponseMaker(
+                            HttpStatus::Service_Unavailable,
+                            "service_unavailable",
+                            "Service unavailable"
+                        );
+                        break;
+
+                    case DatabaseErrorKind::Query:
+                    case DatabaseErrorKind::Constraint:
+                    case DatabaseErrorKind::DataConversion:
+                        response = ErrorResponseMaker(
+                            HttpStatus::Internal_Server_Error,
+                            "internal_server_error",
+                            "Internal Server Error"
+                        );
+                        break;
                 }
-                if (error.kind()==DatabaseErrorKind::Query) {
-                   response = ErrorResponseMaker(HttpStatus::Internal_Server_Error,"internal_server_error","Internal Server Error");
-                }
-                connection_.sendAll(generator.generateHttpResponse(response));
 
             }
+            catch (const std::exception& error) {
+                // 内部记录 error.what()。
+                response = ErrorResponseMaker(
+                    HttpStatus::Internal_Server_Error,
+                    "internal_server_error",
+                    "Internal server error"
+                );
+            }
+            response.headers["Connection"] = "close";
+            connection_.sendAll(generator.generateHttpResponse(response));
+            return;
 
         }
     }

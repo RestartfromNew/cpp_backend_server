@@ -13,6 +13,7 @@
 #include "http/HttpParse.h"
 #include "http/HttpResponse.h"
 #include "databases/DatabaseError.h"
+#include <boost/uuid/uuid_io.hpp>
 #include "handler/Router.h"
 class HttpSession {
     private:

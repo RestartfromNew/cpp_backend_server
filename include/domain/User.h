@@ -12,10 +12,11 @@
  */
 
 #include <string>
+#include <boost/uuid/uuid.hpp>
+//在系统中的实体，表示一个User
 struct User {
-    std::int64_t id;
-    std::string username;
-    std::string email;
+    boost::uuids::uuid id;
+    std::string display_name;
 };
 
 

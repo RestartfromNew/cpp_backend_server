@@ -10,6 +10,9 @@
 #include <string_view>
 #include <libpq-fe.h>
 #include "databases/DatabaseResult.h"
+#include <functional>
+#include <type_traits>
+#include <utility>
 /**
  * @brief Manages a PostgreSQL database connection.
  *
@@ -36,9 +39,8 @@ public:
     DatabaseConnection& operator=(const DatabaseConnection&) = delete;
 
     DatabaseConnection(DatabaseConnection&&) noexcept = delete;
-    DatabaseConnection& operator=(
-        DatabaseConnection&&
-    ) noexcept = delete;
+    DatabaseConnection& operator=(DatabaseConnection&&) noexcept = delete;
+
 
     [[nodiscard]]
     /**
@@ -51,10 +53,34 @@ public:
  *
  * @throws std::runtime_error If the query execution fails.
  */
-    DatabaseResult execute(
-        std::string_view sql,
-        std::span<const std::string> parameters = {}
-    );
+    DatabaseResult execute(std::string_view sql,std::span<const std::string> parameters = {});
+    template <typename Function> auto withTransaction(Function&& operation)-> std::invoke_result_t<Function&&>
+    {
+        using Result = std::invoke_result_t<Function&&>;
+        // 不允许返回引用，避免结果依赖回调内部的局部对象。
+        static_assert(!std::is_reference_v<Result>,"Transaction callback must return a value or void");
+        // 减少提交成功后，移动返回值却抛异常的风险。
+        static_assert(std::is_void_v<Result> ||std::is_nothrow_move_constructible_v<Result>,"Transaction result must be nothrow movable");
+        //从这里开始执行
+        beginTransaction();
+        try {
+            if constexpr (std::is_void_v<Result>) {
+                //调用传入的函数
+                std::invoke(std::forward<Function>(operation));
+                commitTransaction();
+                //提交
+            } else {
+                Result result =std::invoke(std::forward<Function>(operation));
+                commitTransaction();
+                return result;
+            }
+        }
+        catch (...) {
+            rollbackTransactionNoThrow();
+            // 原始错误继续交给业务层处理。
+            throw;
+        }
+    }
 
 private:
     struct Deleter {
@@ -62,6 +88,11 @@ private:
     };
 
     std::unique_ptr<PGconn, Deleter> connection_;
+    void beginTransaction();
+    void commitTransaction();
+    void rollbackTransactionNoThrow() noexcept;
+    void requireConnection(std::string_view operation);
+
 };
 
 

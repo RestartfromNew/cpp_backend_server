@@ -16,8 +16,8 @@
 class UserRepository {
 public:
     explicit UserRepository(DatabaseConnection& database);
-    [[nodiscard]]
     std::optional<User> findByEmail(const std::string& email);
+    std::optional<User> CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name);
 private:
     DatabaseConnection& database_;
 };

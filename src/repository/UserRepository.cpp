@@ -6,22 +6,19 @@
 
 #include <charconv>
 #include <string>
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/string_generator.hpp>
 #include "databases/DatabaseError.h"
 //知道数据库结果，把数据库转换成领域里的对象
 namespace {
     //这个命名空间是cpp内部的，只在这里使用
-    std::int64_t parseId(std::string_view text)
-    {std::int64_t value{};
-        const auto [end, error] = std::from_chars(
-            //从text的开头读到text的结尾，然后把他转换成value
-            text.data(),
-            text.data() + text.size(),
-            value
+    boost::uuids::uuid parseId(std::string_view text)
+    {
+        // 将 UUID 文本解析为 boost::uuids::uuid。
+        // 格式无效时，string_generator 会抛出异常。
+        return boost::uuids::string_generator{}(
+            text.begin(), text.end()
         );
-        if (error != std::errc{} ||end != text.data() + text.size()) {
-            throw std::runtime_error("PostgreSQL returned an invalid user id");
-        }
-        return value;
     }
 
 } // namespace
@@ -48,7 +45,48 @@ UserRepository::findByEmail(const std::string& email)
     if (result.rowCount() == 0) {return std::nullopt;}
 
     return User{.id = parseId(result.value(0, 0)),
-        .username = std::string{result.value(0, 1)},
-        .email = std::string{result.value(0, 2)}
+        .display_name = std::string{result.value(0, 1)},
     };
+}
+std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name) {
+    return database_.withTransaction([&]() -> User {
+        //这是一个lambda函数，捕获this,不接受参数，返回User，他先把结果返回给withTransaction，然后再返回给service
+        const std::string userParameters[] = {display_name};
+        auto result = database_.execute(
+            R"(
+                INSERT INTO app.users (display_name)
+                VALUES ($1)
+                RETURNING id, display_name
+            )",
+            userParameters
+        );
+        const std::string userIdText{
+            result.value(0, 0)
+        };
+        User user{
+            .id = boost::uuids::string_generator{}(userIdText),
+            .display_name = std::string{
+                result.value(0, 1)
+            }
+        };
+        const std::string credentialParameters[] = {
+            userIdText,
+            email,
+            password_hash
+        };
+        auto tempResult=database_.execute(
+            R"(
+                INSERT INTO app.password_credentials (
+                    user_id,
+                    login_email,
+                    password_hash
+                )
+                VALUES ($1, $2, $3)
+            )",
+            credentialParameters
+        );
+
+        return user;
+    });
+
 }

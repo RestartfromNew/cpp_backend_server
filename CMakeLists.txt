@@ -8,6 +8,9 @@ find_package(PostgreSQL REQUIRED)
 set(hiredis_DIR "/usr/lib/x86_64-linux-gnu/cmake/Hiredis")
 find_package(redis++ CONFIG REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(Boost REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SODIUM REQUIRED libsodium)
 add_executable(cpp_backend_server src/main.cpp
         src/server/TcpServer.cpp
         include/server/TcpServer.h
@@ -43,12 +46,15 @@ add_executable(cpp_backend_server src/main.cpp
         src/http/HttpResponse.cpp
         src/http/HttpSession.cpp
         include/http/HttpSession.h
+        src/service/RegisterService.cpp
+        include/service/RegisterService.h
 )
 target_include_directories(
         cpp_backend_server
 
         PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${SODIUM_INCLUDE_DIRS}
 )
 target_link_libraries(
         cpp_backend_server
@@ -56,6 +62,8 @@ target_link_libraries(
         PostgreSQL::PostgreSQL
         redis++::redis++
         nlohmann_json::nlohmann_json
+        Boost::headers
+        ${SODIUM_LIBRARIES}
 )
 target_compile_options(
         cpp_backend_server
