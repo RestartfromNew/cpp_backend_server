@@ -15,13 +15,8 @@ namespace {
 
 }
 RegisterService::RegisterService(UserRepository& repository):userRepository_{repository} {};
-RegisterResult RegisterService::RegisterUserByEmail( std::string email,std::string  password,  std::string  display_name) {
-    email.erase(0, email.find_first_not_of(" "));
-    email.erase(email.find_last_not_of(" ") + 1);
-    display_name.erase(0, display_name.find_first_not_of(" "));
-    display_name.erase(display_name.find_last_not_of(" ") + 1);
-    password.erase(0, password.find_first_not_of(" "));
-    password.erase(password.find_last_not_of(" ") + 1);
+//默认再handler中已经进行过去掉前后空格，email已经全部转换为小写
+RegisterResult RegisterService::RegisterUserByEmail( const std::string &email,const std::string & password,  const std::string  &display_name) {
     if (!checkEmail(email))
         return RegisterResult{RegisterError::InvalidEmail};
     if (!checkPassword(password))

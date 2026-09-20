@@ -11,6 +11,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(Boost REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SODIUM REQUIRED libsodium)
+find_package(jwt-cpp CONFIG REQUIRED)
 add_executable(cpp_backend_server src/main.cpp
         src/server/TcpServer.cpp
         include/server/TcpServer.h
@@ -48,6 +49,19 @@ add_executable(cpp_backend_server src/main.cpp
         include/http/HttpSession.h
         src/service/RegisterService.cpp
         include/service/RegisterService.h
+        src/service/LoginService.cpp
+        include/service/LoginService.h
+        src/service/LoginService.cpp
+        src/Auth/RefreshTokenService.cpp
+        include/Auth/RefreshTokenService.h
+        src/Auth/AccessTokenService.cpp
+        include/Auth/AccessTokenService.h
+        src/repository/RefreshTokenRepository.cpp
+        include/repository/RefreshTokenRepository.h
+        src/handler/RefreshTokenHandler.cpp
+        include/handler/RefreshTokenHandler.h
+        src/http/AuthMiddleWare.cpp
+        include/http/AuthMiddleWare.h
 )
 target_include_directories(
         cpp_backend_server
@@ -64,6 +78,7 @@ target_link_libraries(
         nlohmann_json::nlohmann_json
         Boost::headers
         ${SODIUM_LIBRARIES}
+        jwt-cpp::jwt-cpp
 )
 target_compile_options(
         cpp_backend_server

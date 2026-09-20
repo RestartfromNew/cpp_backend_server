@@ -11,19 +11,28 @@
 #include "nlohmann/json.hpp"
 #include "http/HttpResponse.h"
 #include <service/RegisterService.h>
+#include "service/LoginService.h"
 #include <boost/uuid/uuid_io.hpp>
+
+
+
 
 class UserHandler {
 public:
-    explicit UserHandler(UserService& userService,RegisterService& registerService);
+    explicit UserHandler(UserService& userService,RegisterService& registerService,LoginService& loginService);
     HttpResponse getUser(const HttpRequest& request);
     HttpResponse Register(const HttpRequest& request);
+    HttpResponse LoginByEmail(const HttpRequest& request);
+    HttpResponse verifyaccess(const HttpRequest& request);
+
 
 private:
     std::string toLower(std::string str);
+    std::string conversionInput(const std::string &input);
     //Handler 保存一个service示例
     UserService& userService_;
     RegisterService& registerService_;
+    LoginService & loginService_;
 };
 
 

@@ -24,9 +24,36 @@ namespace {
 } // namespace
 
 UserRepository::UserRepository(DatabaseConnection& database): database_(database){}
+std::optional<PasswordLoginRecord> UserRepository::FindLoginRecordByEmail(const std::string &email) {
+    const std::string parameters[] = {email};
 
-std::optional<User>
-UserRepository::findByEmail(const std::string& email)
+    auto result = database_.execute(
+        R"(
+        SELECT
+            u.id,
+            u.display_name,
+            u.is_active,
+            p.password_hash
+        FROM app.password_credentials AS p
+        JOIN app.users AS u
+            ON u.id = p.user_id
+        WHERE lower(p.login_email) = lower($1)
+    )",
+        parameters
+    );
+
+    if (result.rowCount() == 0) {
+        return std::nullopt;
+    }
+    return PasswordLoginRecord{
+        .id = parseId(result.value(0, 0)),
+        .display_name = std::string{result.value(0, 1)},
+        .is_active = (result.value(0, 2) == "t"),
+        .password_hash = std::string{result.value(0, 3)}
+    };
+}
+
+std::optional<User> UserRepository::findByEmail(const std::string& email)
 {
     //构造一个字符串数组
     const std::string parameters[] = {email};
@@ -47,6 +74,24 @@ UserRepository::findByEmail(const std::string& email)
     return User{.id = parseId(result.value(0, 0)),
         .display_name = std::string{result.value(0, 1)},
     };
+}
+void UserRepository::InsertRefreshToken(const boost::uuids::uuid &id,std::string &refreshToken_hash) {
+    const std::string refresh_Parameters[] = {boost::uuids::to_string(id),refreshToken_hash};
+        auto result=database_.execute(
+    R"(
+        INSERT INTO app.refresh_tokens (
+            user_id,
+            token_hash,
+            expires_at
+        )
+        VALUES (
+            $1,
+            $2,
+            CURRENT_TIMESTAMP + INTERVAL '7 days'
+        )
+    )",
+    refresh_Parameters);
+
 }
 std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name) {
     return database_.withTransaction([&]() -> User {

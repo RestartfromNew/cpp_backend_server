@@ -13,6 +13,7 @@ enum class HttpStatus {
     Accepted = 202,
     No_Content=204,
     Bad_Request = 400,
+    Unauthorized = 401,
     Forbidden = 403,
     Not_Found = 404,
     Method_Not_Allowed = 405,
@@ -51,6 +52,8 @@ constexpr const char* reasonPhrase(HttpStatus status)
             return "Service Unavailable";
         case HttpStatus::Conflict:
             return "Conflict";
+        case HttpStatus::Unauthorized:
+            return "Unauthorized";
 
     }
 

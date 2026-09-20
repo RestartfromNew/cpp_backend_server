@@ -15,6 +15,7 @@
 #include "databases/DatabaseError.h"
 #include <boost/uuid/uuid_io.hpp>
 #include "handler/Router.h"
+#include <iostream>
 class HttpSession {
     private:
     Connection connection_;

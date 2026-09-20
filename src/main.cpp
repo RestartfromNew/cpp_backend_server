@@ -10,6 +10,7 @@
 #include "http/HttpParse.h"
 #include "handler/Router.h"
 #include "repository/UserRepository.h"
+#include "handler/RefreshTokenHandler.h"
 #include "server/Connection.h"
 #include "server/TcpServer.h"
 #include "service/UserService.h"
@@ -17,7 +18,11 @@
 #include <cstdlib>
 #include "http/HttpSession.h"
 #include "service/RegisterService.h"
-
+#include "service/LoginService.h"
+#include "Auth/RefreshTokenService.h"
+#include "Auth/AccessTokenService.h"
+#include "http/AuthMiddleWare.h"
+#include "repository/RefreshTokenRepository.h"
 namespace {
 } // namespace
 
@@ -33,13 +38,36 @@ int main()
             throw std::runtime_error("DATABASE_URL environment variable is not set or is empty");
         }
         //组装组件
+
         DatabaseConnection database{databaseUrl};
         UserRepository userRepository{database};
+        RefreshTokenRepository refreshTokenRepository{database};
+        RefreshTokenService refreshTokenService{refreshTokenRepository};
+
         UserService userService{userRepository};
         RegisterService registerService{userRepository};
-        UserHandler userHandler{userService,registerService};
-        Router router;
+
+
+        const char* secret=std::getenv("JWT_SECRET");
+        if (secret == nullptr || secret[0] == '\0') {
+            throw std::runtime_error("JWT_SECRET is not set or is empty");
+        }
+        AccessTokenService accessTokenService{secret};
+        RefreshTokenHandler refreshTokenHandler{refreshTokenService,accessTokenService};
+
+        AuthMiddleWare authMiddleWare{accessTokenService};
+        LoginService loginService{userRepository,refreshTokenService,accessTokenService};
+        UserHandler userHandler{userService,registerService,loginService};
+        Router router{authMiddleWare};
         //注册路由，如果方法为Get,路径为path,就调用userHanler.getUser方法
+        router.addRoute(
+            HttpMethod::GET,
+            "/refresh_token",
+            [&refreshTokenHandler](const HttpRequest& request)->HttpResponse {
+                //返回一个HttpResponse
+                return refreshTokenHandler.VerifyRefreshToken(request);
+            }
+            );
         router.addRoute(
             HttpMethod::GET,
             "/user",
@@ -48,19 +76,43 @@ int main()
                 return userHandler.getUser(request);
             }
         );
+        router.addProtectedRoute(
+            HttpMethod::POST,
+           "/verify_access_token",
+           [&userHandler](const HttpRequest& request,const boost::uuids::uuid&)->HttpResponse {
+               HttpResponse response =
+               userHandler.verifyaccess(request);
+               response.headers["Content-Type"] =
+               "application/json";
+               return response;
+           }
+            );
         router.addRoute(
             HttpMethod::POST,
             "/register_by_email",
             [&userHandler](const HttpRequest& request)->HttpResponse {
+
                 //返回一个HttpResponse
-                return userHandler.Register(request);
+                HttpResponse response=userHandler.Register(request);
+                response.headers["Content-Type"] = "application/json";
+                return response;
+            }
+            );
+        router.addRoute(
+            HttpMethod::POST,
+            "/login_by_email",
+            [&userHandler](const HttpRequest& request)->HttpResponse {
+                //返回一个HttpResponse
+                HttpResponse response=userHandler.LoginByEmail(request);
+                response.headers["Content-Type"] = "application/json";
+                return response;
             }
             );
         //启动服务
-        TcpServer server{"0.0.0.0",8080};
+        TcpServer server{"0.0.0.0",8081};
         server.start();
         std::cout
-            << "Server listening on port 8080\n";
+            << "Server listening on port 8081\n";
         while (true) {UniqueFd clientFd =server.acceptConnection();
             if (!clientFd.valid()) {
                 continue;

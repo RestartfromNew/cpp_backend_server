@@ -2,8 +2,8 @@
 // Created by yangb on 2026/9/14.
 //
 
-#ifndef CPP_BACKEND_SERVER_LOGINSERVICE_H
-#define CPP_BACKEND_SERVER_LOGINSERVICE_H
+#ifndef CPP_BACKEND_SERVER_REGISTERSERVICE_H
+#define CPP_BACKEND_SERVER_REGISTERSERVICE_H
 #include "domain/User.h"
 #include "string"
 #include <boost/uuid/uuid.hpp>
@@ -28,14 +28,13 @@ public:
     explicit RegisterService(UserRepository& repository);
     ~RegisterService()=default;
 
-    RegisterResult RegisterUserByEmail(std::string email,std::string password, std::string display_name);
+    RegisterResult RegisterUserByEmail( const std::string &email,const std::string & password,  const std::string  &display_name);
 private:
     bool checkEmail(const std::string &email);
     bool checkDisplayName(const std::string &display_name);
     bool checkPassword(const std::string &password);
     std::string passwordHash(const std::string &password);
     UserRepository &userRepository_;
-
 };
 
 

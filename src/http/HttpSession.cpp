@@ -45,6 +45,10 @@ void HttpSession::HandleHttpSession() {
                 return;
             }
             catch (DatabaseError &error) {
+                std::cerr
+               << "HTTP request failed: "
+               << error.what()
+               << '\n';
                 switch (error.kind()) {
                     case DatabaseErrorKind::Connection:
                         response = ErrorResponseMaker(
@@ -53,8 +57,13 @@ void HttpSession::HandleHttpSession() {
                             "Service unavailable"
                         );
                         break;
-
                     case DatabaseErrorKind::Query:
+                        response = ErrorResponseMaker(
+                           HttpStatus::Internal_Server_Error,
+                           "internal_server_error",
+                           "Internal server error"
+                       );
+                        break;
                     case DatabaseErrorKind::Constraint:
                     case DatabaseErrorKind::DataConversion:
                         response = ErrorResponseMaker(
@@ -67,6 +76,10 @@ void HttpSession::HandleHttpSession() {
 
             }
             catch (const std::exception& error) {
+                std::cerr
+               << "HTTP request failed: "
+               << error.what()
+               << '\n';
                 // 内部记录 error.what()。
                 response = ErrorResponseMaker(
                     HttpStatus::Internal_Server_Error,
