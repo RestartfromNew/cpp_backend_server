@@ -3,6 +3,8 @@
 //
 
 #include "databases/DatabaseConnection.h"
+
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -30,6 +32,51 @@ DatabaseConnection::DatabaseConnection(const std::string& connectionString): con
     }
 }
 
+std::chrono::steady_clock::time_point DatabaseConnection::getLastActiveTime() {
+    return this->last_active_time_;
+}
+void DatabaseConnection::setLastActiveTime() {
+    this->last_active_time_= std::chrono::steady_clock::now();
+}
+std::string DatabaseConnection::getErrorMsg() {
+    if (this->error_msg.empty())
+        return "No Error Message";
+    return this->error_msg;
+}
+void DatabaseConnection::close() {
+    if (connection_) {
+        connection_.reset();
+        setLastActiveTime();
+    }
+}
+bool DatabaseConnection::reset() {
+    if (!isAlive()) {
+        close();
+        return false;
+    }
+    switch (PQtransactionStatus(connection_.get())) {
+        case PQTRANS_IDLE:
+            // 没有事务，无需回滚
+            break;
+        case PQTRANS_INTRANS:
+        case PQTRANS_INERROR:
+            rollbackTransactionNoThrow();
+            break;
+        default:
+            // 本版本不尝试复用仍在执行命令或状态不明的连接
+            close();
+            return false;
+    }
+
+    if (!isAlive()|| PQtransactionStatus(connection_.get()) != PQTRANS_IDLE) {
+        close();
+        return false;
+    }
+    error_msg.clear();
+    setLastActiveTime();
+    return true;
+
+}
 void DatabaseConnection::requireConnection(std::string_view operation) {
     //在执行前检查数据库连接
     if (!connection_) {
@@ -52,6 +99,10 @@ void DatabaseConnection::requireConnection(std::string_view operation) {
         };
     }
 
+}
+bool DatabaseConnection::isAlive() const noexcept
+{
+    return connection_&& PQstatus(connection_.get()) == CONNECTION_OK;
 }
 
 DatabaseResult DatabaseConnection::execute(std::string_view sql,std::span<const std::string> parameters)

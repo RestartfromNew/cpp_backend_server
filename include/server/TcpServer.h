@@ -11,6 +11,8 @@ public:
     ~TcpServer();
     void start();
     UniqueFd acceptConnection();
+    void stop() noexcept;
+    int localPort() const; // Supports ephemeral ports in local tests.
 private:
     void createSocket();
     void bindSocket();

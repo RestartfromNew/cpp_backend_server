@@ -23,11 +23,11 @@ namespace {
 
 } // namespace
 
-UserRepository::UserRepository(DatabaseConnection& database): database_(database){}
+UserRepository::UserRepository(DatabasePool &databasePool): databasePool_(databasePool){}
 std::optional<PasswordLoginRecord> UserRepository::FindLoginRecordByEmail(const std::string &email) {
     const std::string parameters[] = {email};
-
-    auto result = database_.execute(
+    ConnectionLease lease(databasePool_);
+    auto result = lease.connection_->execute(
         R"(
         SELECT
             u.id,
@@ -57,8 +57,9 @@ std::optional<User> UserRepository::findByEmail(const std::string& email)
 {
     //构造一个字符串数组
     const std::string parameters[] = {email};
+    ConnectionLease lease(databasePool_);
     //表示第一个参数，就是email
-    auto result = database_.execute(
+    auto result = lease.connection_->execute(
         R"(
             SELECT id, username, email
             FROM users
@@ -77,7 +78,8 @@ std::optional<User> UserRepository::findByEmail(const std::string& email)
 }
 void UserRepository::InsertRefreshToken(const boost::uuids::uuid &id,std::string &refreshToken_hash) {
     const std::string refresh_Parameters[] = {boost::uuids::to_string(id),refreshToken_hash};
-        auto result=database_.execute(
+    ConnectionLease lease(databasePool_);
+    auto result=lease.connection_->execute(
     R"(
         INSERT INTO app.refresh_tokens (
             user_id,
@@ -94,10 +96,12 @@ void UserRepository::InsertRefreshToken(const boost::uuids::uuid &id,std::string
 
 }
 std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name) {
-    return database_.withTransaction([&]() -> User {
+    ConnectionLease lease(databasePool_);
+
+    return lease.connection_->withTransaction([&]() -> User {
         //这是一个lambda函数，捕获this,不接受参数，返回User，他先把结果返回给withTransaction，然后再返回给service
         const std::string userParameters[] = {display_name};
-        auto result = database_.execute(
+        auto result = lease.connection_->execute(
             R"(
                 INSERT INTO app.users (display_name)
                 VALUES ($1)
@@ -119,7 +123,7 @@ std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &emai
             email,
             password_hash
         };
-        auto tempResult=database_.execute(
+        auto tempResult=lease.connection_->execute(
             R"(
                 INSERT INTO app.password_credentials (
                     user_id,

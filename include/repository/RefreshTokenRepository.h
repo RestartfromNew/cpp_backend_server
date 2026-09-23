@@ -14,6 +14,8 @@
 #include <charconv>
 #include <string_view>
 #include <system_error>
+#include "databases/DatabasePool.h"
+#include "databases/ConnectionLease.h"
 using TimePoint = std::chrono::system_clock::time_point;
 struct RefreshTokenResult{
     boost::uuids::uuid id;
@@ -27,7 +29,7 @@ struct RefreshTokenResult{
 class RefreshTokenRepository {
     //负责是实现refresh token的数据库增删改查
     public:
-    explicit RefreshTokenRepository(DatabaseConnection& database);
+    explicit RefreshTokenRepository(DatabasePool &databasePool);
     //查
     std::optional<RefreshTokenResult> getRefreshTokenRecord(const std::string &refreshToken_hash);
     //增
@@ -42,7 +44,7 @@ class RefreshTokenRepository {
 
 
 private:
-    DatabaseConnection& database_;
+    DatabasePool &databasePool_;
 };
 
 

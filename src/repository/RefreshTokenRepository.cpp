@@ -20,11 +20,12 @@ namespace {
     }
 
 }
-RefreshTokenRepository::RefreshTokenRepository(DatabaseConnection& database):database_(database){}
+RefreshTokenRepository::RefreshTokenRepository(DatabasePool &databasePool):databasePool_(databasePool){}
 //查
 std::optional<RefreshTokenResult> RefreshTokenRepository::getRefreshTokenRecord(const std::string &refreshToken_hash) {
     const std::string parameters[]={refreshToken_hash};
-    auto result=database_.execute(R"(
+    ConnectionLease lease(databasePool_);
+    auto result=lease.connection_->execute(R"(
         SELECT
             id,
             user_id,
@@ -51,8 +52,9 @@ std::optional<RefreshTokenResult> RefreshTokenRepository::getRefreshTokenRecord(
 //增
 void RefreshTokenRepository::insertRefreshToken(const boost::uuids::uuid& userId,const std::string& refreshToken_hash,TimePoint expiresAt) {
     const auto expiresAtSeconds =std::chrono::duration_cast<std::chrono::seconds>(expiresAt.time_since_epoch()).count();
+    ConnectionLease lease(databasePool_);
     const std::string refresh_Parameters[] = {boost::uuids::to_string(userId),refreshToken_hash,std::to_string(expiresAtSeconds)};
-    auto result=database_.execute(R"(
+    auto result=lease.connection_->execute(R"(
         INSERT INTO app.refresh_tokens (
             user_id,
             token_hash,
@@ -68,7 +70,8 @@ void RefreshTokenRepository::insertRefreshToken(const boost::uuids::uuid& userId
 //改 标记为失效
 void RefreshTokenRepository::revokeRefreshToken(const std::string &refreshToken_hash) {
     const std::string refresh_Parameters[]={refreshToken_hash};
-    auto result=database_.execute(R"(
+    ConnectionLease lease(databasePool_);
+    auto result=lease.connection_->execute(R"(
         UPDATE app.refresh_tokens
         SET revoked_at = CURRENT_TIMESTAMP
         WHERE token_hash = $1
@@ -80,15 +83,17 @@ void RefreshTokenRepository::revokeRefreshToken(const std::string &refreshToken_
 //删
 void RefreshTokenRepository::deleteRefreshToken(const std::string &refreshToken_hash) {
     const std::string refresh_Parameters[]={refreshToken_hash};
-    auto result=database_.execute(R"(
+    ConnectionLease lease(databasePool_);
+    auto result=lease.connection_->execute(R"(
     DELETE FROM app.refresh_tokensWHERE token_hash = $1)",refresh_Parameters);
 
 }
 bool RefreshTokenRepository::rotate(const std::string& oldTokenHash,const std::string& newTokenHash) {
     //更新token，必须一起成功或者一起回滚
-    return database_.withTransaction([&]() -> bool {
+    ConnectionLease lease(databasePool_);
+    return lease.connection_->withTransaction([&]() -> bool {
         const std::string refresh_Parameters[]={oldTokenHash};
-        auto result = database_.execute(
+        auto result = lease.connection_->execute(
             R"(
                 UPDATE app.refresh_tokens
                 SET revoked_at = CURRENT_TIMESTAMP
@@ -103,7 +108,7 @@ bool RefreshTokenRepository::rotate(const std::string& oldTokenHash,const std::s
         if (result.rowCount() == 0) {return false;}
         const std::string userId{result.value(0, 0)};
         const std::string new_token_Parameters[] = {userId,newTokenHash, std::string{result.value(0, 1)}};
-        auto result_insert=database_.execute(R"(
+        auto result_insert=lease.connection_->execute(R"(
         INSERT INTO app.refresh_tokens (
             user_id,
             token_hash,
@@ -126,7 +131,8 @@ std::size_t RefreshTokenRepository::deleteExpiredBefore(TimePoint cutoff)
 {
     const auto seconds =std::chrono::duration_cast<std::chrono::seconds>(cutoff.time_since_epoch()).count();
     const std::string parameters[] = {std::to_string(seconds)};
-    auto result = database_.execute(
+    ConnectionLease lease(databasePool_);
+    auto result = lease.connection_->execute(
         R"(
             WITH deleted AS (
                 DELETE FROM app.refresh_tokens

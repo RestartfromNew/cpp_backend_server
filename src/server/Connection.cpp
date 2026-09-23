@@ -92,7 +92,7 @@ void Connection::sendAll(std::string_view data) {
             throw std::runtime_error("socket closed while sending");
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            continue;
+            throw std::runtime_error("socket write timed out");
         }
         throw std::runtime_error("send failed");
     }

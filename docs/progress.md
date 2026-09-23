@@ -18,3 +18,15 @@
 阶段 8：加入线程池
 
 阶段 9：再学习 epoll/Reactor
+
+
+## Connection类
+职责：负责数据库的具体执行，包括连接、执行、关闭、释放
+所有权：不可以复制，但是可以转移所有权
+功能：1.启动连接 2. 执行sql语句 3.isAlive()  4.reset（回滚未未完成事务，清除结果集合，） 5.获得错误信息 6. 最后活动时间
+
+## ConnectionLease类
+职责：从Database Pool中借用一个Connection连接，调用连接执行sql代码，在业务代码执行完毕，或者业务范围的错误时确保归还代码到连接池
+
+1. 从Connection Pool中借用一个连接，类型为 Unique_ptr<DatabaseConnection>
+2. 析构函数调用 releaseReturnedConnection函数，

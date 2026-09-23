@@ -13,6 +13,8 @@
 #include "boost/uuid/uuid_io.hpp"
 #include "databases/DatabaseError.h"
 #include "domain/User.h"
+#include "databases/ConnectionLease.h"
+#include "databases/DatabasePool.h"
 //负责接受service来的业务数据，包装成数据库需要形式，执行数据库连接和命令，返回service层处理需要的结果
 //借用但是不拥有数据库连接，不负责析构
 struct PasswordLoginRecord {
@@ -23,14 +25,14 @@ struct PasswordLoginRecord {
 };
 class UserRepository {
 public:
-    explicit UserRepository(DatabaseConnection& database);
+    explicit UserRepository(DatabasePool &databasePool);
     std::optional<User> findByEmail(const std::string& email);
     std::optional<User> CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name);
     std::optional<PasswordLoginRecord> FindLoginRecordByEmail(const std::string &email);
     void InsertRefreshToken(const boost::uuids::uuid &id,std::string &refreshToken_hash);
 
 private:
-    DatabaseConnection& database_;
+    DatabasePool &databasePool_;
 };
 
 #endif //CPP_BACKEND_SERVER_USERREPOSITORY_H

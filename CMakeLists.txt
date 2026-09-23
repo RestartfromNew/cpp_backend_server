@@ -62,6 +62,12 @@ add_executable(cpp_backend_server src/main.cpp
         include/handler/RefreshTokenHandler.h
         src/http/AuthMiddleWare.cpp
         include/http/AuthMiddleWare.h
+        src/databases/DatabasePool.cpp
+        include/databases/DatabasePool.h
+        src/databases/ConnectionLease.cpp
+        include/databases/ConnectionLease.h
+        src/server/ThreadPool.cpp
+        include/server/ThreadPool.h
 )
 target_include_directories(
         cpp_backend_server
@@ -88,4 +94,61 @@ target_compile_options(
         -Wpedantic
         -Wconversion
         -Wshadow
+)
+
+
+
+find_package(Threads REQUIRED)
+target_link_libraries(cpp_backend_server PRIVATE Threads::Threads)
+
+add_executable(thread_pool_test
+        tests/thread_pool_test.cpp
+        src/server/ThreadPool.cpp
+        src/server/TcpServer.cpp
+        src/server/Connection.cpp
+        src/common/UniqueFd.cpp
+        src/http/HttpSession.cpp
+        src/http/HttpParse.cpp
+        src/http/HttpResponse.cpp
+        src/http/HttpResponseGenerator.cpp
+        src/http/AuthMiddleWare.cpp
+        src/handler/Router.cpp
+        src/Auth/AccessTokenService.cpp
+        src/databases/DatabaseError.cpp
+)
+target_include_directories(thread_pool_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(thread_pool_test PRIVATE Threads::Threads Boost::headers
+        nlohmann_json::nlohmann_json jwt-cpp::jwt-cpp)
+
+add_executable(database_pool_test
+        tests/data_connection_pool_main.cpp
+        src/databases/DatabasePool.cpp
+        src/databases/DatabaseConnection.cpp
+        src/databases/DatabaseResult.cpp
+        src/databases/DatabaseError.cpp
+        src/databases/ConnectionLease.cpp
+)
+
+target_include_directories(database_pool_test
+        PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+target_link_libraries(database_pool_test
+        PRIVATE
+        PostgreSQL::PostgreSQL
+        Threads::Threads
+)
+
+enable_testing()
+add_test(NAME thread_pool_lifecycle COMMAND thread_pool_test)
+set_tests_properties(thread_pool_lifecycle PROPERTIES TIMEOUT 20)
+
+add_test(
+        NAME database_pool_smoke
+        COMMAND database_pool_test
+)
+
+set_tests_properties(database_pool_smoke PROPERTIES
+        TIMEOUT 20
 )

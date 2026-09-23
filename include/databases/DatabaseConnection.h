@@ -13,6 +13,7 @@
 #include <functional>
 #include <type_traits>
 #include <utility>
+#include <chrono>
 /**
  * @brief Manages a PostgreSQL database connection.
  *
@@ -31,15 +32,23 @@ public:
  *        to the database.
  * Example:host=127.0.0.1 port=5432 dbname=psql_username user=cpp_backend_app password=password
  */
-    explicit DatabaseConnection(
-        const std::string& connectionString
-    );
 
+
+    //不允许copy
+    explicit DatabaseConnection(const std::string& connectionString);
     DatabaseConnection(const DatabaseConnection&) = delete;
     DatabaseConnection& operator=(const DatabaseConnection&) = delete;
 
-    DatabaseConnection(DatabaseConnection&&) noexcept = delete;
-    DatabaseConnection& operator=(DatabaseConnection&&) noexcept = delete;
+    //可以转移所有权
+    DatabaseConnection(DatabaseConnection&& connection) noexcept=default;
+    DatabaseConnection& operator=(DatabaseConnection&& other) noexcept=default;
+
+    [[nodiscard]] bool isAlive() const noexcept;
+    bool reset();
+    void close();
+    std::string getErrorMsg();
+    std::chrono::steady_clock::time_point getLastActiveTime();
+    void setLastActiveTime();
 
 
     [[nodiscard]]
@@ -86,12 +95,17 @@ private:
     struct Deleter {
         void operator()(PGconn* connection) const noexcept;
     };
-
     std::unique_ptr<PGconn, Deleter> connection_;
+
     void beginTransaction();
     void commitTransaction();
     void rollbackTransactionNoThrow() noexcept;
     void requireConnection(std::string_view operation);
+
+    std::string error_msg;
+    std::chrono::steady_clock::time_point last_active_time_{}; //最后活动时间
+
+
 
 };
 

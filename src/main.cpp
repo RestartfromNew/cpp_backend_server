@@ -5,7 +5,6 @@
 #include <sodium.h>
 #include <stdexcept>
 #include "common/UniqueFd.h"
-#include "databases/DatabaseConnection.h"
 #include "handler/UserHandler.h"
 #include "http/HttpParse.h"
 #include "handler/Router.h"
@@ -23,12 +22,55 @@
 #include "Auth/AccessTokenService.h"
 #include "http/AuthMiddleWare.h"
 #include "repository/RefreshTokenRepository.h"
+#include "databases/DatabasePool.h"
+#include "server/ThreadPool.h"
+#include <cerrno>
+#include <csignal>
+#include <pthread.h>
+#include <sys/signalfd.h>
+#include <unistd.h>
+#include <system_error>
 namespace {
+// Block before starting ANY background thread. Main consumes signals as data;
+// no mutex, logging, or join is executed inside a signal handler.
+class StopSignals {
+public:
+    StopSignals() {
+        sigset_t mask;
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGINT);
+        sigaddset(&mask, SIGTERM);
+        const int error = pthread_sigmask(SIG_BLOCK, &mask, &previous_);
+        if (error) throw std::system_error(error, std::generic_category(), "block stop signals");
+        fd_.reset(signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC));
+        if (!fd_.valid()) {
+            const int saved = errno;
+            pthread_sigmask(SIG_SETMASK, &previous_, nullptr);
+            throw std::system_error(saved, std::generic_category(), "signalfd");
+        }
+    }
+    ~StopSignals() { pthread_sigmask(SIG_SETMASK, &previous_, nullptr); }
+    bool requested() {
+        signalfd_siginfo info{};
+        const auto count = ::read(fd_.get(), &info, sizeof(info));
+        if (count == static_cast<ssize_t>(sizeof(info))) {
+            std::cout << "[server] stop signal " << info.ssi_signo << " received\n";
+            return true;
+        }
+        if (count < 0 && (errno == EAGAIN || errno == EINTR)) return false;
+        throw std::runtime_error("Failed to read stop signal");
+    }
+private:
+    sigset_t previous_{};
+    UniqueFd fd_;
+};
 } // namespace
 
 int main()
 {
     try {
+        StopSignals stopSignals; // Destroyed last, after all background threads.
+        std::cout << std::unitbuf;
         //读取配置
         if (sodium_init() < 0) {
             throw std::runtime_error("Failed to initialize libsodium");
@@ -38,12 +80,19 @@ int main()
             throw std::runtime_error("DATABASE_URL environment variable is not set or is empty");
         }
         //组装组件
-
-        DatabaseConnection database{databaseUrl};
-        UserRepository userRepository{database};
-        RefreshTokenRepository refreshTokenRepository{database};
+        DatabasePoolConfig config{};
+        config.min_connections_ = 5;
+        config.max_connections = 100;
+        config.acquire_time = 5000;
+        config.idle_time = 60000;
+        config.check_interval = 100;
+        DatabasePool databasePool;
+        if (!databasePool.init(databaseUrl, config)) {
+            throw std::runtime_error("Concurrent pool initialization failed");
+        }
+        UserRepository userRepository{databasePool};
+        RefreshTokenRepository refreshTokenRepository{databasePool};
         RefreshTokenService refreshTokenService{refreshTokenRepository};
-
         UserService userService{userRepository};
         RegisterService registerService{userRepository};
 
@@ -109,33 +158,23 @@ int main()
             }
             );
         //启动服务
+
+        // TcpServer server{"0.0.0.0",8081};
         TcpServer server{"0.0.0.0",8081};
         server.start();
-        std::cout
-            << "Server listening on port 8081\n";
-        while (true) {UniqueFd clientFd =server.acceptConnection();
-            if (!clientFd.valid()) {
-                continue;
-            }
-            Connection connection{std::move(clientFd)};
-            HttpSession session(std::move(connection),router);
-            try {
-                session.HandleHttpSession();
-            } catch (const std::exception& error) {
-                std::cerr
-                    << "Connection error: "
-                    << error.what()
-                    << '\n';
+        ThreadPoolConfig thread_pool_config{4,8};
+        ThreadPool thread_pool(thread_pool_config,server,router);
+        if (!thread_pool.init())
+            throw std::runtime_error("Thread pool initialization failed");
+        std::cout << "[server] ready on port 8081; workers=4; queue_capacity=8; Ctrl+C to stop\n";
+        thread_pool.running([&stopSignals] { return stopSignals.requested(); });
+        server.stop();
+        std::cout << "[server] listener closed; waiting for workers\n";
+        thread_pool.close();
+        std::cout << "[server] all workers joined; closing database pool\n";
+        databasePool.close();
+        std::cout << "[server] database pool closed; shutdown complete\n";
 
-                if (session.is_open()) {
-                    try {
-                        HttpResponse response=ErrorResponseMaker(HttpStatus::Internal_Server_Error,"Internal Server Error","Internal Server Error");
-                        session.sendAll(response);
-                    } catch (...) {
-                    }
-                }
-            }
-        }
     } catch (const std::exception& error) {
         std::cerr
             << "Server error: "
