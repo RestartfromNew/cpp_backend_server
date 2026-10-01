@@ -5,7 +5,9 @@
 #ifndef CPP_BACKEND_SERVER_CONNECTION_H
 #define CPP_BACKEND_SERVER_CONNECTION_H
 #include "common/UniqueFd.h"
+#include <cstddef>
 #include <string>
+#include <string_view>
 #include <errno.h>
 #include <iostream>
 
@@ -29,6 +31,7 @@ class Connection {
     void close()noexcept;
     void sendAll(std::string_view data);
     std::string_view inputBuffer() const ;
+    [[nodiscard]] bool hasPendingOutput() const noexcept;
 
     void consumeInput(std::size_t n);
 

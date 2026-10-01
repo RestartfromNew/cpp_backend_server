@@ -27,9 +27,12 @@
 #include <cerrno>
 #include <csignal>
 #include <pthread.h>
+#include <websocket/WebSocketPool.h>
 #include <sys/signalfd.h>
 #include <unistd.h>
 #include <system_error>
+#include "websocket/WebSocketDispatcher.h"
+#include "service/ServiceThreadPool.h"
 namespace {
 // Block before starting ANY background thread. Main consumes signals as data;
 // no mutex, logging, or join is executed inside a signal handler.
@@ -81,8 +84,8 @@ int main()
         }
         //组装组件
         DatabasePoolConfig config{};
-        config.min_connections_ = 5;
-        config.max_connections = 100;
+        config.min_connections_ = 4;
+        config.max_connections = 8;
         config.acquire_time = 5000;
         config.idle_time = 60000;
         config.check_interval = 100;
@@ -95,6 +98,7 @@ int main()
         RefreshTokenService refreshTokenService{refreshTokenRepository};
         UserService userService{userRepository};
         RegisterService registerService{userRepository};
+
 
 
         const char* secret=std::getenv("JWT_SECRET");
@@ -160,17 +164,26 @@ int main()
         //启动服务
 
         // TcpServer server{"0.0.0.0",8081};
-        TcpServer server{"0.0.0.0",8081};
+        TcpServer server{"0.0.0.0",8082};
         server.start();
         ThreadPoolConfig thread_pool_config{4,8};
-        ThreadPool thread_pool(thread_pool_config,server,router);
+        WebSocketPoolConfig web_socket_pool_config{4,100};
+        ServiceThreadPool service_thread_pool(2);
+        WebSocketDispatcher web_socket_dispatcher(service_thread_pool);
+        WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher);
+        ThreadPool thread_pool(thread_pool_config,server,router,web_socket_pool);
+        service_thread_pool.init();
         if (!thread_pool.init())
             throw std::runtime_error("Thread pool initialization failed");
+        if (!web_socket_pool.init())
+            throw std::runtime_error("websocket pool initialization failed");
         std::cout << "[server] ready on port 8081; workers=4; queue_capacity=8; Ctrl+C to stop\n";
         thread_pool.running([&stopSignals] { return stopSignals.requested(); });
         server.stop();
         std::cout << "[server] listener closed; waiting for workers\n";
         thread_pool.close();
+        service_thread_pool.close();
+        web_socket_pool.close();
         std::cout << "[server] all workers joined; closing database pool\n";
         databasePool.close();
         std::cout << "[server] database pool closed; shutdown complete\n";

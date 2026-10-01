@@ -12,6 +12,8 @@ class HttpResponseGenerator {
     HttpResponseGenerator()=default;
     ~HttpResponseGenerator()=default;
     std::string generateHttpResponse(const HttpResponse &response) ;
+
+
 };
 
 

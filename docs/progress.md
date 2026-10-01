@@ -30,3 +30,20 @@
 
 1. 从Connection Pool中借用一个连接，类型为 Unique_ptr<DatabaseConnection>
 2. 析构函数调用 releaseReturnedConnection函数，
+``
+   "header": {
+   "fin": true,
+   "opcode": 1,
+   "opcode_name": "text",
+   "payload_length": 100
+   },
+   "payload_format": "json",
+   "payload": {
+   "type": "chat.send",
+   "request_id": "req-1001",
+   "data": {
+   "conversation_id": "C1",
+   "content": "hello"
+   }
+   }
+   }``

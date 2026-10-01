@@ -9,6 +9,7 @@
 #include "common/UniqueFd.h"
 #include "server/TcpServer.h"
 #include "handler/Router.h"
+#include "websocket/WebSocketPool.h"
 
 struct ThreadPoolConfig {
     int min_capacity; // Fixed worker count.
@@ -16,7 +17,7 @@ struct ThreadPoolConfig {
 };
 class ThreadPool {
 public:
-    ThreadPool(const ThreadPoolConfig&, TcpServer&, Router&);
+    ThreadPool(const ThreadPoolConfig&, TcpServer&, Router&, WebSocketPool&);
     ~ThreadPool();
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
@@ -38,4 +39,5 @@ private:
     ThreadPoolConfig config_;
     TcpServer& server_;
     Router& router_;
+    WebSocketPool &webSocketPool_;
 };

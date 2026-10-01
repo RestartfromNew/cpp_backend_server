@@ -25,7 +25,7 @@ RefreshTokenRepository::RefreshTokenRepository(DatabasePool &databasePool):datab
 std::optional<RefreshTokenResult> RefreshTokenRepository::getRefreshTokenRecord(const std::string &refreshToken_hash) {
     const std::string parameters[]={refreshToken_hash};
     ConnectionLease lease(databasePool_);
-    auto result=lease.connection_->execute(R"(
+    auto result=lease.connection().execute(R"(
         SELECT
             id,
             user_id,
@@ -54,7 +54,7 @@ void RefreshTokenRepository::insertRefreshToken(const boost::uuids::uuid& userId
     const auto expiresAtSeconds =std::chrono::duration_cast<std::chrono::seconds>(expiresAt.time_since_epoch()).count();
     ConnectionLease lease(databasePool_);
     const std::string refresh_Parameters[] = {boost::uuids::to_string(userId),refreshToken_hash,std::to_string(expiresAtSeconds)};
-    auto result=lease.connection_->execute(R"(
+    auto result=lease.connection().execute(R"(
         INSERT INTO app.refresh_tokens (
             user_id,
             token_hash,
@@ -71,7 +71,7 @@ void RefreshTokenRepository::insertRefreshToken(const boost::uuids::uuid& userId
 void RefreshTokenRepository::revokeRefreshToken(const std::string &refreshToken_hash) {
     const std::string refresh_Parameters[]={refreshToken_hash};
     ConnectionLease lease(databasePool_);
-    auto result=lease.connection_->execute(R"(
+    auto result=lease.connection().execute(R"(
         UPDATE app.refresh_tokens
         SET revoked_at = CURRENT_TIMESTAMP
         WHERE token_hash = $1
@@ -84,23 +84,23 @@ void RefreshTokenRepository::revokeRefreshToken(const std::string &refreshToken_
 void RefreshTokenRepository::deleteRefreshToken(const std::string &refreshToken_hash) {
     const std::string refresh_Parameters[]={refreshToken_hash};
     ConnectionLease lease(databasePool_);
-    auto result=lease.connection_->execute(R"(
+    auto result=lease.connection().execute(R"(
     DELETE FROM app.refresh_tokensWHERE token_hash = $1)",refresh_Parameters);
 
 }
 bool RefreshTokenRepository::rotate(const std::string& oldTokenHash,const std::string& newTokenHash) {
     //更新token，必须一起成功或者一起回滚
     ConnectionLease lease(databasePool_);
-    return lease.connection_->withTransaction([&]() -> bool {
+    return lease.connection().withTransaction([&]() -> bool {
         const std::string refresh_Parameters[]={oldTokenHash};
-        auto result = lease.connection_->execute(
+        auto result = lease.connection().execute(
             R"(
                 UPDATE app.refresh_tokens
                 SET revoked_at = CURRENT_TIMESTAMP
                 WHERE token_hash = $1
                   AND revoked_at IS NULL
                   AND expires_at > CURRENT_TIMESTAMP
-                RETURNING user_id,
+                RETURNING user_id
             EXTRACT(EPOCH FROM expires_at)::bigint;
             )",
             refresh_Parameters
@@ -108,7 +108,7 @@ bool RefreshTokenRepository::rotate(const std::string& oldTokenHash,const std::s
         if (result.rowCount() == 0) {return false;}
         const std::string userId{result.value(0, 0)};
         const std::string new_token_Parameters[] = {userId,newTokenHash, std::string{result.value(0, 1)}};
-        auto result_insert=lease.connection_->execute(R"(
+        auto result_insert=lease.connection().execute(R"(
         INSERT INTO app.refresh_tokens (
             user_id,
             token_hash,
@@ -132,11 +132,10 @@ std::size_t RefreshTokenRepository::deleteExpiredBefore(TimePoint cutoff)
     const auto seconds =std::chrono::duration_cast<std::chrono::seconds>(cutoff.time_since_epoch()).count();
     const std::string parameters[] = {std::to_string(seconds)};
     ConnectionLease lease(databasePool_);
-    auto result = lease.connection_->execute(
+    auto result = lease.connection().execute(
         R"(
             WITH deleted AS (
-                DELETE FROM app.refresh_tokens
-                WHERE expires_at < to_timestamp($1::double precision)
+                DELETE FROM app.refresh_tokens WHERE expires_at < to_timestamp($1::double precision)
                 RETURNING id
             )
             SELECT count(*) FROM deleted

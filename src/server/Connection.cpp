@@ -100,6 +100,9 @@ void Connection::sendAll(std::string_view data) {
 std::string_view Connection::inputBuffer() const {
     return input_buffer_;
 }
+bool Connection::hasPendingOutput() const noexcept {
+    return !output_buffer_.empty();
+}
 void Connection::consumeInput(std::size_t n) {
     if (n >= input_buffer_.size()) {
         input_buffer_.clear();

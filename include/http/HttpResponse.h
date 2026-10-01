@@ -21,7 +21,8 @@ enum class HttpStatus {
     Internal_Server_Error = 500,
     Service_Unavailable = 503,
     Bad_Gateway = 502,
-    Conflict=409
+    Conflict=409,
+    Switching_Protocol = 101
 };
 constexpr const char* reasonPhrase(HttpStatus status)
 {
@@ -54,6 +55,8 @@ constexpr const char* reasonPhrase(HttpStatus status)
             return "Conflict";
         case HttpStatus::Unauthorized:
             return "Unauthorized";
+        case HttpStatus::Switching_Protocol:
+            return "Switching Protocols";
 
     }
 

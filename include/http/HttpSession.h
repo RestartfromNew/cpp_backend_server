@@ -16,6 +16,8 @@
 #include <boost/uuid/uuid_io.hpp>
 #include "handler/Router.h"
 #include <iostream>
+#include "websocket/WebSocketPool.h"
+#include "websocket/WebsocketWorker.h"
 class HttpSession {
     private:
     Connection connection_;
@@ -25,7 +27,7 @@ class HttpSession {
     public:
     HttpSession(Connection &&connection, Router &router);
     ~HttpSession()=default;
-    void HandleHttpSession();
+    std::optional<PendingWebsocket> HandleHttpSession();
     bool is_open();
     void sendAll(HttpResponse &response);
 

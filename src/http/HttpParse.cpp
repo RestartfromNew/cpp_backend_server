@@ -9,7 +9,8 @@
 ParseResult HttpParse::parse(std::string_view buffer) {
     std::size_t consumed = 0;
 
-    while (true) {std::string_view sub_buffer = buffer.substr(consumed);
+    while (true) {
+        std::string_view sub_buffer = buffer.substr(consumed);
         switch (state_) {
             case State::RequestLine: {
                 StepResult result = parseRequestLine(sub_buffer);

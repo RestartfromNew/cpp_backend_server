@@ -5,8 +5,8 @@
 #include <syncstream>
 #include <sys/socket.h>
 
-ThreadPool::ThreadPool(const ThreadPoolConfig& config, TcpServer& server, Router& router)
-    : config_(config), server_(server), router_(router) {}
+ThreadPool::ThreadPool(const ThreadPoolConfig& config, TcpServer& server, Router& router,WebSocketPool& webSocketPool)
+    : config_(config), server_(server), router_(router), webSocketPool_(webSocketPool) {}
 ThreadPool::~ThreadPool() { close(); }
 
 bool ThreadPool::init() {
@@ -100,7 +100,12 @@ void ThreadPool::worker(std::size_t index) {
                 active_fds_.insert(rawFd);
             }
             try {
-                session.HandleHttpSession();
+                std::optional<PendingWebsocket> result=session.HandleHttpSession();
+                if (result.has_value()) {
+                    webSocketPool_.forward_connections(std::move(*result));
+                    std::lock_guard lock(mutex_);
+                    active_fds_.erase(rawFd);
+                }
             } catch (...) {
                 // Includes shutdown cancellation. Do not let exceptions kill a worker.
             }

@@ -4,15 +4,17 @@
 
 #include "http/HttpSession.h"
 
+#include <cctype>
+
 HttpSession::HttpSession(Connection &&connection, Router &router) :connection_(std::move(connection)), router_(router) {
 }
-void HttpSession::HandleHttpSession() {
+std::optional<PendingWebsocket> HttpSession::HandleHttpSession() {
     HttpResponseGenerator generator;
     HttpResponse response;
     while (connection_.is_open()) {
         const ssize_t bytesRead =connection_.read();
         if (bytesRead == 0) {
-            return;
+            return std::nullopt;
         }
         if (bytesRead < 0) {
             throw std::runtime_error("Failed to read from client");
@@ -33,16 +35,51 @@ void HttpSession::HandleHttpSession() {
             response.headers["Connection"] = "close";
             connection_.sendAll(generator.generateHttpResponse(response));
 
-            return;
+            return std::nullopt;
         }
         if (result.status == ParseStatus::Complete) {
             HttpRequest request = parser_.takeRequest();
+
+            const auto equalsIgnoreCase = [](
+                std::string_view left,
+                std::string_view right
+            ) {
+                if (left.size() != right.size()) return false;
+                for (std::size_t i = 0; i < left.size(); ++i) {
+                    const auto leftCharacter = static_cast<unsigned char>(left[i]);
+                    const auto rightCharacter = static_cast<unsigned char>(right[i]);
+                    if (std::tolower(leftCharacter) != std::tolower(rightCharacter)) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+
+            bool websocketUpgrade = false;
+            for (const auto& [name, rawValue] : request.headers) {
+                if (!equalsIgnoreCase(name, "Upgrade")) continue;
+
+                std::string_view value = rawValue;
+                while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+                    value.remove_prefix(1);
+                }
+                while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
+                    value.remove_suffix(1);
+                }
+
+                websocketUpgrade = equalsIgnoreCase(value, "websocket");
+                break;
+            }
+
+            if (websocketUpgrade) {
+                return PendingWebsocket{std::move(connection_),std::move(request)};
+            }
             try {
                 response = router_.route(request);
                 response.headers["Connection"] = "close";
                 std::string bytes =generator.generateHttpResponse(response);
                 connection_.sendAll(bytes);
-                return;
+                return std::nullopt;
             }
             catch (DatabaseError &error) {
                 std::cerr
@@ -89,10 +126,11 @@ void HttpSession::HandleHttpSession() {
             }
             response.headers["Connection"] = "close";
             connection_.sendAll(generator.generateHttpResponse(response));
-            return;
+            return std::nullopt;
 
         }
     }
+    return std::nullopt;
 }
 
 bool HttpSession::is_open() {
@@ -104,4 +142,3 @@ void HttpSession::sendAll(HttpResponse &response) {
     const std::string responseString = generator.generateHttpResponse(response);
     connection_.sendAll(responseString);
 }
-
