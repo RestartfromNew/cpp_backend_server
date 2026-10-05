@@ -1,6 +1,6 @@
 # 服务器后端接口文档
 
-更新时间：2026-09-20。
+更新时间：2026-10-02。
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
@@ -12,9 +12,9 @@ English version: [Backend API Documentation](backend-api.en.md)。
 | --- | --- | --- |
 | 域名入口（本文默认） | `https://aittelegramapi.uk` | 用户已配置的 HTTPS 域名；本次未在线核验 DNS、证书或代理配置 |
 | Windows 本地通过 Nginx 访问 WSL | `http://localhost:8088` | 保留为本地调试入口，不是公网客户端应使用的地址 |
-| 直接访问 C++ 服务 | `http://127.0.0.1:8081` | 当前 main 实际监听 `0.0.0.0:8081`，不是只监听回环地址 |
+| 直接访问 C++ 服务 | `http://localhost:8082` | 当前 main 实际监听 `0.0.0.0:8082`；启动日志可能仍显示旧端口 8081 |
 
-以下接口路径拼接在基础地址之后，例如 `https://aittelegramapi.uk/login_by_email`。当前代码没有 `/api` 或 `/v1` 前缀。基础地址不包含 `/login_by_email`；该部分是登录接口路径。本文请求示例均使用域名入口，原始 HTTP 报文示例通过 HTTPS 连接发送。
+以下接口路径拼接在基础地址之后，例如 `https://aittelegramapi.uk/login_by_email`。当前代码没有 `/api` 或 `/v1` 前缀。基础地址不包含 `/login_by_email`；该部分是登录接口路径。原有认证示例使用域名入口，第 12 节的 PowerShell 好友示例使用本地 8082 端口。
 
 - JSON 请求使用 `Content-Type: application/json`，请求体必须是 JSON 对象，不接受数组、字符串或 `null`。当前 Handler 实际按请求体解析，没有强制验证 Content-Type。
 - 字段名区分大小写；额外 JSON 字段目前被忽略。
@@ -46,6 +46,11 @@ X-User-Email: alice@example.com
 | POST | `/verify_access_token` | 必须 | 验证 Access Token，成功后进入受保护 Handler |
 | GET | `/refresh_token` | 不需要 | 验证 Refresh Token 并签发新的 Access Token |
 | GET | `/user` | 不需要 | 旧版按邮箱查询用户的调试接口，不建议继续依赖 |
+| GET | `/find_user_by_username` | 必须 | 按用户名查找用户，要求 JSON Body |
+| POST | `/request_friendship` | 必须 | 创建好友申请 |
+| GET | `/fetch_unprocessed_friend_request` | 必须 | 拉取收到的待处理申请，无需 Body |
+| POST | `/process_friendship_request` | 必须 | 接受、拒绝或取消申请 |
+| GET | `/fetch_friends` | 必须 | 拉取当前用户的好友列表，无需 Body |
 
 注意：`/refresh_token` 当前确实注册为 GET，且要求 JSON 请求体。本文忠实记录此行为，不代表推荐这样设计；后续应改为 POST。
 
@@ -94,6 +99,7 @@ X-User-Email: alice@example.com
 {
   "email": "alice@example.com",
   "password": "TestPass123!",
+  "username": "alice_chat01",
   "display_name": "Alice"
 }
 ```
@@ -103,6 +109,7 @@ X-User-Email: alice@example.com
 | email | string | 是 | 非空；去除首尾普通空格、转为小写，再进行正则校验 |
 | password | string | 是 | 去除首尾普通空格后，6～20 个 ASCII 测试字符范围内满足密码正则；至少有小写字母、大写字母、数字、非字母数字且非空白的字符，整体不能含空白 |
 | display_name | string | 是 | 去除首尾普通空格后，3～20 个字符，仅英文字母、数字、下划线 |
+| username | string | 是 | 去除首尾普通空格后，3～30 个字符，允许英文字母、数字、下划线和英文句点；当前代码不转小写，最终还受数据库约束限制 |
 
 这里的“去除空格”仅指代码移除首尾的 ASCII 空格，不是所有 Unicode 空白字符。当前密码也会被去除首尾空格，这应在后续修正；客户端暂时不要使用带首尾空格的密码。非 ASCII 密码的长度/字符分类不应按 Unicode 字符数理解，当前实现未定义完善的 Unicode 密码规则。
 
@@ -123,7 +130,8 @@ X-User-Email: alice@example.com
 ```json
 {
   "id": "33e76cf5-fc26-4fff-9f88-d08690ffb863",
-  "display_name": "Alice"
+  "display_name": "Alice",
+  "username": "alice_chat01"
 }
 ```
 
@@ -136,10 +144,13 @@ X-User-Email: alice@example.com
 | 400 | `missing_register_email` | email 缺失、不是字符串或原始值为空字符串 |
 | 400 | `missing_register_password` | password 缺失、不是字符串或原始值为空字符串 |
 | 400 | `missing_register_display_name` | display_name 缺失、不是字符串或原始值为空字符串 |
+| 400 | `missing_register_username` | username 缺失、非字符串或为空 |
+| 400 | `invalid_user_name` | username 格式错误或匹配到用户名 CHECK 约束失败 |
 | 400 | `invalid_email` | 规范化后邮箱不符合规则 |
 | 400 | `invalid_password` | 规范化后密码不符合规则 |
 | 400 | `invalid_display_name` | 规范化后名称不符合规则 |
 | 409 | `email_already_exists` | 邮箱唯一约束冲突且被服务层识别 |
+| 409 | `username_already_exists` |用户名唯一约束冲突且被服务层识别 |
 | 500 | `register_failed` | 注册服务返回注册失败 |
 
 多个字段同时错误时，只返回首先检查到的一个错误。重复邮箱映射依赖数据库错误码 `23505` 和约束名称 `password_credentials_login_email_unique`，数据库结构必须与代码一致。
@@ -166,7 +177,8 @@ X-User-Email: alice@example.com
   "id": "33e76cf5-fc26-4fff-9f88-d08690ffb863",
   "display_name": "Alice",
   "access_token": "ACCESS_TOKEN",
-  "refresh_token": "REFRESH_TOKEN"
+  "refresh_token": "REFRESH_TOKEN",
+  "username": "alice_chat01"
 }
 ```
 
@@ -295,7 +307,7 @@ X-User-Email: alice@example.com
 ### 9.1 注册
 
 ```bat
-curl.exe -i "https://aittelegramapi.uk/register_by_email" -H "Content-Type: application/json" --data-raw "{\"email\":\"api_test01@example.com\",\"password\":\"TestPass123!\",\"display_name\":\"ApiTest01\"}"
+curl.exe -i "https://aittelegramapi.uk/register_by_email" -H "Content-Type: application/json" --data-raw "{\"email\":\"api_test01@example.com\",\"password\":\"TestPass123!\",\"display_name\":\"ApiTest01\",\"username\":\"api_test01\"}"
 ```
 
 预期：首次注册 201，重复注册在数据库约束匹配时为 409。
@@ -371,3 +383,189 @@ curl.exe -i -X GET "https://aittelegramapi.uk/refresh_token" -H "Content-Type: a
 | 通用异常到 HTTP 错误的转换 | [HttpSession.cpp](../src/http/HttpSession.cpp) |
 
 接口路径、参数、状态码或响应结构改变时，应在同一次修改中更新本文，并重新执行注册→登录→受保护访问→刷新的测试链路。
+
+## 12. 用户查找与好友接口
+
+本节接口都要求小写认证头 `authorization: Bearer ACCESS_TOKEN`。认证失败返回 401：
+`invalid_access_token` 或 `access_token_expired`，以中间件实际分类为准。
+操作者 ID 来自 token，不从 Body 获取。UUID 在 JSON 中表示为字符串。
+本次仅核对源码和文档，没有运行接口测试。
+
+### 12.1 GET `/find_user_by_username`
+
+当前要求 JSON Body，不使用查询参数：
+
+```json
+{"username":"bob_chat01"}
+```
+
+成功为 200：
+
+```json
+{"id":"0776df58-9cbe-4f81-b613-4439f6c3b566","username":"bob_chat01","display_name":"Bob"}
+```
+
+按用户名精确查询，不自动转换大小写。错误：
+
+| HTTP | code | 条件 |
+| --- | --- | --- |
+| 400 | missing_request_body / invalid_json | Body 为空或不是合法 JSON 对象 |
+| 400 | missing_username | username 缺失、非字符串或为空 |
+| 400 | cannot_find_myself | 查找当前用户自己 |
+| 404 | user_not_found | 未找到用户 |
+
+数据库异常由 HTTP 层统一处理。GET Body 的兼容性有限，属于当前实现而非推荐的长期接口设计。
+
+### 12.2 POST `/request_friendship`
+
+```json
+{"friend_id":"0776df58-9cbe-4f81-b613-4439f6c3b566","message":"Hi Bob, I am Alice!"}
+```
+
+friend_id 是目标用户 UUID；message 可省略，当前非字符串或空值也按空字符串处理。
+成功返回 **200、空响应体**，表示申请已保存，不表示已成为好友或通知已送达。
+
+| HTTP | code | 条件 |
+| --- | --- | --- |
+| 400 | missing_request_body / invalid_json | Body 错误 |
+| 400 | missing_friend_id | friend_id 缺失、非字符串或为空 |
+| 400 | cannot_request_friendship_myself | 向自己申请 |
+| 409 | request_already_exists | 双方已有 pending 申请且唯一索引错误被识别 |
+| 503 | request_friendship_failed | 当前 Handler 捕获的服务异常 |
+
+当前非法 UUID 转换在 try 外，可能返回通用 500；不存在的目标可能因外键错误返回 503，并非 404。
+好友申请说明是服务端可读文本，不是端到端加密聊天正文。
+
+### 12.3 GET `/fetch_unprocessed_friend_request`
+
+无需 Body。查询当前用户作为接收者的 pending 申请，按创建时间及申请 ID 倒序。
+
+```json
+{
+  "unprocessed_requests": [
+    {
+      "request_id": "efbd99da-b38f-4ee9-9c70-6a2ef96c2820",
+      "id": "85467846-84e3-4bcb-b3f9-a4f5dd1cd492",
+      "username": "alice_chat01",
+      "display_name": "Alice",
+      "message": "Hi Bob, I am Alice!"
+    }
+  ]
+}
+```
+
+request_id 是申请 ID；id 是申请者用户 ID。处理申请时使用前者。
+当前无申请返回 `{"unprocessed_requests":"None"}`，尚未统一为空数组。
+成功为 200；当前捕获异常返回 503 `fetch_new_request_failed`。
+已处理申请不在此列表，响应当前不包含申请时间。
+
+### 12.4 POST `/process_friendship_request`
+
+```json
+{"request_id":"efbd99da-b38f-4ee9-9c70-6a2ef96c2820","process":"accepted"}
+```
+
+| process | 允许操作人 | 效果 |
+| --- | --- | --- |
+| accepted | 接收者 | 接受，并在同一事务建立双向好友关系 |
+| rejected | 接收者 | 拒绝，不建立关系 |
+| cancelled | 发起者 | 取消，不建立关系 |
+
+不提交 requester_id 或 friend_id；双方 ID 从申请记录取得。
+成功为 200：
+
+```json
+{"request_id":"efbd99da-b38f-4ee9-9c70-6a2ef96c2820","status":"accepted","already_processed":false}
+```
+
+重复同一操作返回 200、already_processed=true，不重复写入关系，也不恢复后来删除的关系。
+同一申请的操作使用行锁串行处理；接受操作中任一数据库步骤失败则事务回滚。
+连接断开时提交结果可能无法确认，应以同一 request_id 和 process 重试。
+
+| HTTP | code | 条件 |
+| --- | --- | --- |
+| 400 | missing_request_body / invalid_json | Body 错误 |
+| 400 | invalid_request_id | 缺失、非字符串、空或非法 UUID |
+| 400 | invalid_process | 缺失、类型错误或不属于三个允许值 |
+| 403 | friend_request_forbidden | 当前用户无权执行该操作 |
+| 404 | friend_request_not_found | 申请不存在 |
+| 409 | friend_request_already_processed | 申请已处于另一最终状态 |
+| 503 | database_unavailable | 数据库连接错误 |
+| 500 | process_friend_request_failed | 其他数据库错误 |
+
+尚未接入实时通知、屏蔽或账号禁用校验。申请结果保留在数据库中，但本次未提供通知列表接口。
+
+### 12.5 GET `/fetch_friends`
+
+无需 Body、无需查询参数。只查询认证用户自己的好友，不允许通过提交别人的 user_id 改变查询身份。
+从 app.friend_relation 关联 app.users 返回公开资料，按 username、用户 ID 排序。
+
+成功为 200：
+
+```json
+{
+  "friends": [
+    {
+      "id": "0776df58-9cbe-4f81-b613-4439f6c3b566",
+      "username": "bob_chat01",
+      "display_name": "Bob"
+    }
+  ]
+}
+```
+
+无好友时返回 `{"friends":[]}`，不是 404，也不是字符串 "None"。
+当前返回全部好友，不分页，不按 is_active 过滤已有关系；不返回邮箱、密码哈希或 token。
+前提是好友表只包含已建立关系，不能遗留旧 pending 数据。
+
+| HTTP | code | 条件 |
+| --- | --- | --- |
+| 401 | invalid_access_token / access_token_expired | 认证失败 |
+| 503 | database_unavailable | 数据库连接错误 |
+| 500 | fetch_friends_failed | 其他数据库错误 |
+
+未被 Handler 捕获的其他异常仍由 HTTP 层转换为 500 `internal_server_error`。
+
+### 12.6 Windows PowerShell 联调
+
+以下不是 CMD 命令。反引号续行符后面不能有空格。使用一次性测试账号，不公开真实 token。
+
+```powershell
+# Bob 登录
+$loginBody = @{
+    email = "bob_chat01@example.com"
+    password = "TestPass123@"
+} | ConvertTo-Json -Compress
+
+$login = Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8082/login_by_email" `
+    -ContentType "application/json" -Body $loginBody
+
+$bobToken = $login.access_token
+
+# 拉取待处理申请，复制所需的 request_id
+Invoke-RestMethod -Method Get `
+    -Uri "http://localhost:8082/fetch_unprocessed_friend_request" `
+    -Headers @{ authorization = "Bearer $bobToken" } |
+    ConvertTo-Json -Depth 10
+
+# 用户确认后接受指定申请；替换为真实申请 ID
+$processBody = @{
+    request_id = "REPLACE_WITH_REQUEST_UUID"
+    process = "accepted"
+} | ConvertTo-Json -Compress
+
+Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8082/process_friendship_request" `
+    -Headers @{ authorization = "Bearer $bobToken" } `
+    -ContentType "application/json" -Body $processBody
+
+# 拉取好友
+Invoke-RestMethod -Method Get `
+    -Uri "http://localhost:8082/fetch_friends" `
+    -Headers @{ authorization = "Bearer $bobToken" } |
+    ConvertTo-Json -Depth 10
+```
+
+验收应覆盖：无好友空数组、双方接受后互相可见、拒绝/取消不新增好友、
+无 token 返回 401、不能通过 Body 读取他人列表、重复接受不产生重复关系。

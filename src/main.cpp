@@ -132,7 +132,7 @@ int main()
         router.addProtectedRoute(
             HttpMethod::POST,
            "/verify_access_token",
-           [&userHandler](const HttpRequest& request,const boost::uuids::uuid&)->HttpResponse {
+           [&userHandler](const HttpRequest& request,const boost::uuids::uuid& uuid)->HttpResponse {
                HttpResponse response =
                userHandler.verifyaccess(request);
                response.headers["Content-Type"] =
@@ -140,6 +140,33 @@ int main()
                return response;
            }
             );
+        router.addProtectedRoute(
+           HttpMethod::GET,
+          "/find_user_by_username",
+          [&userHandler](const HttpRequest& request,const boost::uuids::uuid& uuid)->HttpResponse {
+              HttpResponse response =userHandler.FindUserByUsername(request,uuid);
+              response.headers["Content-Type"] ="application/json";
+              return response;
+          }
+           );
+        router.addProtectedRoute(
+           HttpMethod::GET,
+          "/fetch_unprocessed_friend_request",
+          [&userHandler](const HttpRequest& request,const boost::uuids::uuid& uuid)->HttpResponse {
+              HttpResponse response =userHandler.FetchUnprocessedFriendship(request,uuid);
+              response.headers["Content-Type"] ="application/json";
+              return response;
+          }
+           );
+        router.addProtectedRoute(
+           HttpMethod::POST,
+          "/request_friendship",
+          [&userHandler](const HttpRequest& request,const boost::uuids::uuid& uuid)->HttpResponse {
+              HttpResponse response =userHandler.RequestFriendship(request,uuid);
+              response.headers["Content-Type"] ="application/json";
+              return response;
+          }
+           );
         router.addRoute(
             HttpMethod::POST,
             "/register_by_email",
@@ -161,10 +188,26 @@ int main()
                 return response;
             }
             );
-        //启动服务
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/process_friendship_request",
+            [&userHandler](const HttpRequest& request, const boost::uuids::uuid& uuid) {
+                return userHandler.ProcessFriendshipRequest(request, uuid);
+            }
+        );
+        router.addProtectedRoute(
+            HttpMethod::GET,
+            "/fetch_friends",
+            [&userHandler](const HttpRequest& request, const boost::uuids::uuid& uuid)->HttpResponse {
+                HttpResponse response = userHandler.FetchFriends(request, uuid);
+                response.headers["Content-Type"] = "application/json";
+                return response;
+            }
+        );
 
-        // TcpServer server{"0.0.0.0",8081};
-        TcpServer server{"0.0.0.0",8082};
+        //启动服务
+        TcpServer server{"0.0.0.0",8081};
+        // TcpServer server{"0.0.0.0",8082};
         server.start();
         ThreadPoolConfig thread_pool_config{4,8};
         WebSocketPoolConfig web_socket_pool_config{4,100};

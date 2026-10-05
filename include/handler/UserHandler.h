@@ -13,8 +13,11 @@
 #include <service/RegisterService.h>
 #include "service/LoginService.h"
 #include <boost/uuid/uuid_io.hpp>
+#include <domain/FriendshipRequestRecord.h>
+#include <stdexcept>
 
-
+#include <exception>
+#include <iostream>
 
 
 class UserHandler {
@@ -23,6 +26,12 @@ public:
     HttpResponse getUser(const HttpRequest& request);
     HttpResponse Register(const HttpRequest& request);
     HttpResponse LoginByEmail(const HttpRequest& request);
+    HttpResponse FindUserByUsername(const HttpRequest& request,const boost::uuids::uuid&);
+    HttpResponse RequestFriendship(const HttpRequest& request,const boost::uuids::uuid&);
+    HttpResponse FetchUnprocessedFriendship(const HttpRequest& request,const boost::uuids::uuid&);
+    HttpResponse FetchFriends(const HttpRequest& request,const boost::uuids::uuid& my_uuid);
+    HttpResponse ProcessFriendshipRequest(const HttpRequest& request,
+        const boost::uuids::uuid& my_uuid);
     HttpResponse verifyaccess(const HttpRequest& request);
 
 
@@ -33,6 +42,7 @@ private:
     UserService& userService_;
     RegisterService& registerService_;
     LoginService & loginService_;
+
 };
 
 

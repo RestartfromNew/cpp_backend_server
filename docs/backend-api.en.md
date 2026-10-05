@@ -1,6 +1,6 @@
 # Backend API Documentation
 
-Last updated: 2026-09-20.
+Last updated: 2026-10-02.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
@@ -12,9 +12,9 @@ This document describes the HTTP endpoints registered in the current source code
 | --- | --- | --- |
 | Domain entry point (default in this document) | `https://aittelegramapi.uk` | HTTPS domain configured by the user; DNS, certificates, and proxy configuration were not verified online during this task |
 | Local Windows access to WSL through Nginx | `http://localhost:8088` | Retained for local debugging, not for public clients |
-| Direct access to the C++ server | `http://127.0.0.1:8081` | main currently binds to `0.0.0.0:8081`, not only to the loopback interface |
+| Direct access to the C++ server | `http://localhost:8082` | main currently binds to `0.0.0.0:8082`; the startup log may still show the old port 8081 |
 
-Append endpoint paths to the base URL, for example `https://aittelegramapi.uk/login_by_email`. There is no `/api` or `/v1` prefix. The base URL does not include `/login_by_email`; that is the login endpoint path. Request examples use the domain entry point. Raw HTTP message examples below are sent over an HTTPS connection.
+Append endpoint paths to the base URL, for example `https://aittelegramapi.uk/login_by_email`. There is no `/api` or `/v1` prefix. The base URL does not include `/login_by_email`; that is the login endpoint path. Existing authentication examples use the domain entry point; the PowerShell friendship examples in Section 12 use local port 8082.
 
 - Send JSON requests with `Content-Type: application/json`. The body must be a JSON object, not an array, string, or `null`. Handlers currently parse the body without enforcing Content-Type.
 - Field names are case-sensitive. Additional JSON fields are currently ignored.
@@ -46,6 +46,11 @@ The client must calculate Content-Length; do not copy the example value 123. Aut
 | POST | `/verify_access_token` | Required | Verify an Access Token and enter a protected Handler |
 | GET | `/refresh_token` | Not required | Validate a Refresh Token and issue a new Access Token |
 | GET | `/user` | Not required | Legacy email-based user lookup for debugging; not recommended for further integration |
+| GET | `/find_user_by_username` | Required | Find a user; requires a JSON body |
+| POST | `/request_friendship` | Required | Create a friend request |
+| GET | `/fetch_unprocessed_friend_request` | Required | Fetch incoming pending requests; no body |
+| POST | `/process_friendship_request` | Required | Accept, reject, or cancel a request |
+| GET | `/fetch_friends` | Required | Fetch the authenticated user's friends; no body |
 
 `/refresh_token` is currently registered as GET and requires a JSON body. This documents the existing behavior, not a recommended design. It should be migrated to POST.
 
@@ -94,7 +99,8 @@ No Access Token is required.
 {
   "email": "alice@example.com",
   "password": "TestPass123!",
-  "display_name": "Alice"
+  "display_name": "Alice",
+  "username": "alice_chat01"
 }
 ```
 
@@ -103,6 +109,7 @@ No Access Token is required.
 | email | string | Yes | Non-empty; leading/trailing ordinary spaces are removed, then the value is lowercased and checked against the email regex |
 | password | string | Yes | After trimming ordinary spaces, ASCII test inputs must be 6–20 characters and match the password regex: at least one lowercase letter, uppercase letter, digit, and non-alphanumeric non-whitespace character; no whitespace anywhere |
 | display_name | string | Yes | After trimming ordinary spaces, 3–20 characters consisting only of English letters, digits, and underscores |
+| username | string | Yes | After trimming ordinary spaces, 3–30 English letters, digits, underscores or periods; currently not lowercased; database constraints also apply |
 
 Trimming here means removing leading/trailing ASCII spaces, not all Unicode whitespace. Passwords are also currently trimmed; this should be corrected later. For now, do not use passwords with leading/trailing spaces. Non-ASCII password length and character classification must not be interpreted as Unicode character counts; the implementation does not define a complete Unicode password policy.
 
@@ -123,7 +130,8 @@ Current password regex:
 ```json
 {
   "id": "33e76cf5-fc26-4fff-9f88-d08690ffb863",
-  "display_name": "Alice"
+  "display_name": "Alice",
+  "username": "alice_chat01"
 }
 ```
 
@@ -136,6 +144,9 @@ Current password regex:
 | 400 | `missing_register_email` | email is missing, not a string, or originally an empty string |
 | 400 | `missing_register_password` | password is missing, not a string, or originally an empty string |
 | 400 | `missing_register_display_name` | display_name is missing, not a string, or originally an empty string |
+| 400 | `missing_register_username` | username is missing, not a string, or empty |
+| 400 | `invalid_user_name` | Invalid username format or a recognized username CHECK violation |
+| 409 | `username_already_exists` | A recognized username uniqueness violation |
 | 400 | `invalid_email` | Normalized email fails validation |
 | 400 | `invalid_password` | Normalized password fails validation |
 | 400 | `invalid_display_name` | Normalized display name fails validation |
@@ -166,7 +177,8 @@ Both fields must be non-empty strings. Email is trimmed of leading/trailing ordi
   "id": "33e76cf5-fc26-4fff-9f88-d08690ffb863",
   "display_name": "Alice",
   "access_token": "ACCESS_TOKEN",
-  "refresh_token": "REFRESH_TOKEN"
+  "refresh_token": "REFRESH_TOKEN",
+  "username": "alice_chat01"
 }
 ```
 
@@ -295,7 +307,7 @@ These commands are for **CMD (Command Prompt)** inside Windows Terminal, not Pow
 ### 9.1 Register
 
 ```bat
-curl.exe -i "https://aittelegramapi.uk/register_by_email" -H "Content-Type: application/json" --data-raw "{\"email\":\"api_test01@example.com\",\"password\":\"TestPass123!\",\"display_name\":\"ApiTest01\"}"
+curl.exe -i "https://aittelegramapi.uk/register_by_email" -H "Content-Type: application/json" --data-raw "{\"email\":\"api_test01@example.com\",\"password\":\"TestPass123!\",\"display_name\":\"ApiTest01\",\"username\":\"api_test01\"}"
 ```
 
 Expected: 201 for the first registration; 409 for a duplicate if the database constraint matches the expected name.
@@ -371,3 +383,199 @@ Examples now use the domain provided by the user, but configuring a domain and H
 | Common exception-to-HTTP-error mapping | [HttpSession.cpp](../src/http/HttpSession.cpp) |
 
 Whenever endpoint paths, parameters, statuses, or response structures change, update both language versions in the same change and rerun the registration → login → protected access → refresh test sequence.
+
+## 12. User Discovery and Friendship Endpoints
+
+All endpoints in this section require the lowercase header `authorization: Bearer ACCESS_TOKEN`.
+Authentication failures return 401 with `invalid_access_token` or `access_token_expired`,
+depending on the middleware classification. The acting user ID comes from the token, not the body.
+UUIDs are JSON strings. This update was checked against source code; no live API tests were run.
+
+### 12.1 GET `/find_user_by_username`
+
+Currently requires a JSON body, not query parameters:
+
+```json
+{"username":"bob_chat01"}
+```
+
+Success: 200.
+
+```json
+{"id":"0776df58-9cbe-4f81-b613-4439f6c3b566","username":"bob_chat01","display_name":"Bob"}
+```
+
+Lookup uses an exact username match without automatic lowercasing. Errors:
+
+| HTTP | code | Condition |
+| --- | --- | --- |
+| 400 | missing_request_body / invalid_json | Empty body or invalid JSON object |
+| 400 | missing_username | Missing, non-string, or empty username |
+| 400 | cannot_find_myself | Searching for the authenticated user |
+| 404 | user_not_found | No matching user |
+
+Database exceptions use the common HTTP-layer mapping. GET bodies have limited interoperability;
+this describes the implementation, not the recommended long-term API design.
+
+### 12.2 POST `/request_friendship`
+
+```json
+{"friend_id":"0776df58-9cbe-4f81-b613-4439f6c3b566","message":"Hi Bob, I am Alice!"}
+```
+
+friend_id is the target user's UUID. message is optional; currently non-string or empty values also
+become an empty string. Success is **200 with an empty body**: the request has been saved,
+not necessarily delivered or accepted.
+
+| HTTP | code | Condition |
+| --- | --- | --- |
+| 400 | missing_request_body / invalid_json | Invalid body |
+| 400 | missing_friend_id | Missing, non-string, or empty friend_id |
+| 400 | cannot_request_friendship_myself | Self-request |
+| 409 | request_already_exists | A pending request exists between the pair and its unique-index error is recognized |
+| 503 | request_friendship_failed | Service exceptions caught by the current Handler |
+
+Invalid UUID conversion currently occurs outside the try block and may return a generic 500.
+A nonexistent target may trigger a foreign-key error mapped to 503, not 404.
+The request message is server-readable text, not end-to-end encrypted chat content.
+
+### 12.3 GET `/fetch_unprocessed_friend_request`
+
+No body. Returns pending requests addressed to the authenticated user, ordered by creation time
+and request ID descending.
+
+```json
+{
+  "unprocessed_requests": [
+    {
+      "request_id": "efbd99da-b38f-4ee9-9c70-6a2ef96c2820",
+      "id": "85467846-84e3-4bcb-b3f9-a4f5dd1cd492",
+      "username": "alice_chat01",
+      "display_name": "Alice",
+      "message": "Hi Bob, I am Alice!"
+    }
+  ]
+}
+```
+
+request_id identifies the request; id identifies its sender. Use request_id when processing it.
+Currently, no requests returns `{"unprocessed_requests":"None"}`, not an empty array.
+Success is 200; caught exceptions return 503 `fetch_new_request_failed`.
+Processed requests are excluded. The response currently omits the request timestamp.
+
+### 12.4 POST `/process_friendship_request`
+
+```json
+{"request_id":"efbd99da-b38f-4ee9-9c70-6a2ef96c2820","process":"accepted"}
+```
+
+| process | Authorized actor | Effect |
+| --- | --- | --- |
+| accepted | Recipient | Accept and create both friendship directions in one transaction |
+| rejected | Recipient | Reject without creating a friendship |
+| cancelled | Requester | Cancel without creating a friendship |
+
+Do not submit requester_id or friend_id; both identities are read from the stored request.
+Success: 200.
+
+```json
+{"request_id":"efbd99da-b38f-4ee9-9c70-6a2ef96c2820","status":"accepted","already_processed":false}
+```
+
+Repeating the same action returns 200 with already_processed=true, without duplicate relationships
+or restoring a friendship deleted later. A row lock serializes operations on the same request.
+Database failures within acceptance roll back the transaction. A connection loss can leave the
+commit outcome uncertain; retry using the same request_id and process.
+
+| HTTP | code | Condition |
+| --- | --- | --- |
+| 400 | missing_request_body / invalid_json | Invalid body |
+| 400 | invalid_request_id | Missing, non-string, empty, or invalid UUID |
+| 400 | invalid_process | Missing, wrong type, or not one of the three allowed values |
+| 403 | friend_request_forbidden | Actor is not authorized for this action |
+| 404 | friend_request_not_found | Request does not exist |
+| 409 | friend_request_already_processed | Request already has a different final state |
+| 503 | database_unavailable | Database connection error |
+| 500 | process_friend_request_failed | Other database errors |
+
+Real-time notifications, blocking, and disabled-account checks are not integrated.
+Results remain in the database; no notification-list endpoint was added in this change.
+
+### 12.5 GET `/fetch_friends`
+
+No body or query parameters. Fetches only the authenticated user's friends; supplying another
+user_id in a body does not change the query identity. Joins app.friend_relation to app.users
+and returns public fields ordered by username and user ID.
+
+Success: 200.
+
+```json
+{
+  "friends": [
+    {
+      "id": "0776df58-9cbe-4f81-b613-4439f6c3b566",
+      "username": "bob_chat01",
+      "display_name": "Bob"
+    }
+  ]
+}
+```
+
+No friends returns `{"friends":[]}`, not 404 or the string "None".
+Currently returns all friends without pagination or filtering existing relationships by is_active.
+Emails, password hashes, and tokens are excluded.
+The friendship table must contain established relationships only, not legacy pending records.
+
+| HTTP | code | Condition |
+| --- | --- | --- |
+| 401 | invalid_access_token / access_token_expired | Authentication failure |
+| 503 | database_unavailable | Database connection error |
+| 500 | fetch_friends_failed | Other database errors |
+
+Other uncaught exceptions are mapped by the HTTP layer to 500 `internal_server_error`.
+
+### 12.6 Windows PowerShell Integration Example
+
+These are not CMD commands. Do not put spaces after continuation backticks.
+Use disposable test accounts and never publish real tokens.
+
+```powershell
+# Log in as Bob
+$loginBody = @{
+    email = "bob_chat01@example.com"
+    password = "TestPass123@"
+} | ConvertTo-Json -Compress
+
+$login = Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8082/login_by_email" `
+    -ContentType "application/json" -Body $loginBody
+
+$bobToken = $login.access_token
+
+# Fetch pending requests and copy the desired request_id
+Invoke-RestMethod -Method Get `
+    -Uri "http://localhost:8082/fetch_unprocessed_friend_request" `
+    -Headers @{ authorization = "Bearer $bobToken" } |
+    ConvertTo-Json -Depth 10
+
+# Accept a chosen request after user confirmation; replace the UUID placeholder
+$processBody = @{
+    request_id = "REPLACE_WITH_REQUEST_UUID"
+    process = "accepted"
+} | ConvertTo-Json -Compress
+
+Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8082/process_friendship_request" `
+    -Headers @{ authorization = "Bearer $bobToken" } `
+    -ContentType "application/json" -Body $processBody
+
+# Fetch friends
+Invoke-RestMethod -Method Get `
+    -Uri "http://localhost:8082/fetch_friends" `
+    -Headers @{ authorization = "Bearer $bobToken" } |
+    ConvertTo-Json -Depth 10
+```
+
+Acceptance checks: an empty array for no friends; mutual visibility after acceptance; no new friendship
+after rejection/cancellation; 401 without a token; no reading other users' lists through body fields;
+and no duplicate relationships after repeated acceptance.

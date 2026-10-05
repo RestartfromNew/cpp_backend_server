@@ -36,7 +36,7 @@ LoginServiceResult LoginService::loginByEmail(const std::string &email, const st
     std::string refreshToken=refreshTokenService_.generateRefreshToken();
     std::string refreshTokenHashed=refreshTokenService_.RefreshTokenHash(refreshToken);
     userRepository_.InsertRefreshToken(password_login_record->id,refreshTokenHashed);
-    User user{password_login_record->id,password_login_record->display_name};
+    User user{password_login_record->id,password_login_record->display_name,password_login_record->username};
     return LoginServiceResult{UserToken{user,accessToken,refreshToken}};
 }
 

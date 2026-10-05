@@ -83,6 +83,7 @@ add_executable(cpp_backend_server src/main.cpp
         include/service/ChatService.h
         src/websocket/webSocketDispatcher.cpp
         include/websocket/webSocketDispatcher.h
+        include/domain/FriendshipRequestRecord.h
 )
 target_include_directories(
         cpp_backend_server

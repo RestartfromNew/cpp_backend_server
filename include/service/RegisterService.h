@@ -17,8 +17,10 @@ enum RegisterError{
     InvalidEmail,
     InvalidPassword,
     InvalidDisplayName,
+    InvalidUsername,
     EmailExists,
     RegisterFailed,
+    UsernameExists,
 };
 struct RegisterResult {
     std::variant<User,RegisterError> result;
@@ -28,11 +30,13 @@ public:
     explicit RegisterService(UserRepository& repository);
     ~RegisterService()=default;
 
-    RegisterResult RegisterUserByEmail( const std::string &email,const std::string & password,  const std::string  &display_name);
+    RegisterResult RegisterUserByEmail( const std::string &email,const std::string & password,
+        const std::string  &display_name,const std::string &username);
 private:
     bool checkEmail(const std::string &email);
     bool checkDisplayName(const std::string &display_name);
     bool checkPassword(const std::string &password);
+    bool checkUsername(const std::string &username);
     std::string passwordHash(const std::string &password);
     UserRepository &userRepository_;
 };

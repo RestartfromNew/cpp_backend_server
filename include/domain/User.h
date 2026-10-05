@@ -17,6 +17,7 @@
 struct User {
     boost::uuids::uuid id;
     std::string display_name;
+    std::string username;
 };
 
 

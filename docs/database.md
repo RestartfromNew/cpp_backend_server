@@ -23,6 +23,7 @@
 |:-------------:|:------------:|:----:|:----:|
 |      id       |     UUID     |primary key;Not null| 系统中标识用户实体的唯一id
 | display_name  |     TEXT     |Not null|
+|username|TEXT|Unique|在系统中唯一的用户名，用于查找好友|
 |   is_active   |   BOOLEAN    |Default True|
 |  created_at   | TIMESTAMPTZ  | Default NOW()|
 |  updated_at   | TIMESTAMPTZ  |  Default NOW()|
@@ -33,7 +34,11 @@ CONSTRAINT users_display_name_not_blank
 CHECK (
     length(trim(display_name)) > 0
 )
+ALTER TABLE app.users 
+ADD CONSTRAINT users_check CHECK (username ~ '^[a-z0-9_.]{3,30}$');
+
 ```
+3-30个字符，包括英文，数字，英文点号.,下划线
 
 ## password_credential
 - 一个未注册用户通过邮箱+密码注册成功之后，表中保存email+password_hash两个记录；注册成功的用户可以通过该方式登录
@@ -209,7 +214,7 @@ CONSTRAINT external_identities_user_issuer_unique
 ## 对象
 两个已经完成注册的用户
 
-## 基本功能
+## 基本功能 
 两方同时在线时，一方用户发送一条消息，对方能够实时接收并实现持久化存储
 一方不在线时，发送消息实现持久化存储，在对方上线时能收到消息更新
 消息类型包括文字、图片、文件，暂时不支持视频发送
@@ -220,6 +225,23 @@ CONSTRAINT external_identities_user_issuer_unique
 
 以下为 PostgreSQL 建表设计，统一使用现有项目的 `app` schema 和 `app.users(id)`。前提是认证系统迁移已完成，且这四张聊天表尚未创建。按文档顺序执行四个 SQL 块；附件外键在附件表创建后补上，因此不能只执行消息表代码就认为所有约束已经建立。正式迁移时应将四块放入同一事务，并使用现有 `owner_role` 创建，以沿用项目默认表权限；本节不是修改已有表的 ALTER 迁移。
 
+### 好友请求表 friend_request
+| 字段 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | UUID | 主键；默认自动生成 | 申请唯一标识 |
+| `requester_id` | UUID | 非空；外键 → `app.users(id)` | 申请发起者 |
+| `recipient_id` | UUID | 非空；外键 → `app.users(id)` | 申请接收者 |
+| `status` | TEXT | 非空；默认 `pending` | 申请状态 |
+| `message` | TEXT | 可空；最长 200 字符 | 申请说明 |
+| `created_at` | TIMESTAMPTZ | 非空；默认当前时间 | 创建时间 |
+| `processed_at` | TIMESTAMPTZ | 可空 | 接受、拒绝或取消的时间 |
+
+| 当前状态 | 操作 | 操作人 | 新状态 |
+|---|---|---|---|
+| `pending` | 接受 | 接收者 | `accepted` |
+| `pending` | 拒绝 | 接收者 | `rejected` |
+| `pending` | 取消 | 发起者 | `cancelled` |
+
 ### 好友关系 friend_relation
 
 一个好友关系在数据库中成对出现，例如 `(A, B)` 和 `(B, A)`。每行 `id` 标识一个方向的记录，不是两行共用的关系 ID。`status` 保留当前约定的 `pending`、`accept`、`blocked`：blocked 表示本行 user_id 屏蔽 friend_id，不自动表示反方向也屏蔽。
@@ -229,7 +251,6 @@ CONSTRAINT external_identities_user_issuer_unique
 | id | UUID | Primary Key; Not Null | 单向好友记录的唯一标识 |
 | user_id | UUID | FK → app.users(id); ON DELETE CASCADE; Not Null | 当前方向的用户 |
 | friend_id | UUID | FK → app.users(id); ON DELETE CASCADE; Not Null | 对方用户 |
-| status | app.friend_relation_status | Not Null; Default pending | pending / accept / blocked |
 | created_at | TIMESTAMPTZ | Not Null; Default CURRENT_TIMESTAMP | 创建时间 |
 | updated_at | TIMESTAMPTZ | Not Null; Default CURRENT_TIMESTAMP | 更新时由触发器刷新 |
 
@@ -244,7 +265,6 @@ CREATE TABLE app.friend_relation (
         REFERENCES app.users(id) ON DELETE CASCADE,
     friend_id UUID NOT NULL
         REFERENCES app.users(id) ON DELETE CASCADE,
-    status app.friend_relation_status NOT NULL DEFAULT 'pending',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
