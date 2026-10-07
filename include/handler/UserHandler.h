@@ -19,10 +19,12 @@
 #include <exception>
 #include <iostream>
 
+#include "service/KeyService.h"
+
 
 class UserHandler {
 public:
-    explicit UserHandler(UserService& userService,RegisterService& registerService,LoginService& loginService);
+    explicit UserHandler(UserService& userService,RegisterService& registerService,LoginService& loginService,KeyService& keyService);
     HttpResponse getUser(const HttpRequest& request);
     HttpResponse Register(const HttpRequest& request);
     HttpResponse LoginByEmail(const HttpRequest& request);
@@ -42,6 +44,7 @@ private:
     UserService& userService_;
     RegisterService& registerService_;
     LoginService & loginService_;
+    KeyService& keyService_;
 
 };
 

@@ -110,7 +110,9 @@ int main()
 
         AuthMiddleWare authMiddleWare{accessTokenService};
         LoginService loginService{userRepository,refreshTokenService,accessTokenService};
-        UserHandler userHandler{userService,registerService,loginService};
+        KeyRepository keyRepository{databasePool};
+        KeyService keyService{keyRepository};
+        UserHandler userHandler{userService,registerService,loginService,keyService};
         Router router{authMiddleWare};
         //注册路由，如果方法为Get,路径为path,就调用userHanler.getUser方法
         router.addRoute(
@@ -206,8 +208,8 @@ int main()
         );
 
         //启动服务
-        TcpServer server{"0.0.0.0",8081};
-        // TcpServer server{"0.0.0.0",8082};
+        // TcpServer server{"0.0.0.0",8081};
+        TcpServer server{"0.0.0.0",8082};
         server.start();
         ThreadPoolConfig thread_pool_config{4,8};
         WebSocketPoolConfig web_socket_pool_config{4,100};

@@ -1,0 +1,13 @@
+//
+// Created by yangb on 2026/10/7.
+//
+
+#ifndef CPP_BACKEND_SERVER_ENVELOPEREPOSITORY_H
+#define CPP_BACKEND_SERVER_ENVELOPEREPOSITORY_H
+
+
+class EnvelopeRepository {
+};
+
+
+#endif //CPP_BACKEND_SERVER_ENVELOPEREPOSITORY_H

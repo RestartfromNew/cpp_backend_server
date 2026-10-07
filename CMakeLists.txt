@@ -84,6 +84,14 @@ add_executable(cpp_backend_server src/main.cpp
         src/websocket/webSocketDispatcher.cpp
         include/websocket/webSocketDispatcher.h
         include/domain/FriendshipRequestRecord.h
+        src/repository/KeyRepository.cpp
+        include/repository/KeyRepository.h
+        src/repository/EnvelopeRepository.cpp
+        include/repository/EnvelopeRepository.h
+        include/domain/Device.h
+        include/domain/DeviceKeyBundle.h
+        src/service/KeyService.cpp
+        include/service/KeyService.h
 )
 target_include_directories(
         cpp_backend_server

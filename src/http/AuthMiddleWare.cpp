@@ -5,9 +5,13 @@
 #include "http/AuthMiddleWare.h"
 AuthMiddleWare::AuthMiddleWare(AccessTokenService &accessTokenService):accessTokenService_(accessTokenService) {}
 AuthResult AuthMiddleWare::authenticate(const HttpRequest &request)const{
-    const auto iterator =request.headers.find("authorization");
-    if (iterator == request.headers.end())
+    auto iterator = request.headers.find("authorization");
+    if (iterator == request.headers.end()) {
+        iterator = request.headers.find("Authorization");
+    }
+    if (iterator == request.headers.end()) {
         return AuthResult{AuthError::UnAuthorized};
+    }
     const std::string& authorization = iterator->second;
     // 先用简单写法检查固定前缀。
     const std::string prefix = "Bearer ";

@@ -274,7 +274,7 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
             SET status = $2, processed_at = CURRENT_TIMESTAMP
             WHERE id = $1 AND status = 'pending'
             RETURNING id
-        )", update);
+        )",  update);
         if (updated.rowCount() != 1) return FriendRequestProcessResult::Conflict;
 
         if (action == FriendRequestAction::Accept) {
@@ -283,7 +283,7 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
                 INSERT INTO app.friend_relation (user_id, friend_id)
                 VALUES ($1, $2), ($2, $1)
                 ON CONFLICT (user_id, friend_id) DO NOTHING
-            )", members);
+            )",  members);
         }
         return FriendRequestProcessResult::Success;
     });

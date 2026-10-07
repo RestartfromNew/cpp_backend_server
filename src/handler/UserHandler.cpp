@@ -6,6 +6,7 @@
 #include "handler/UserHandler.h"
 #include "nlohmann/json.hpp"
 #include <boost/uuid/string_generator.hpp>
+#include <optional>
 
 HttpResponse UserHandler::FetchFriends(const HttpRequest&, const boost::uuids::uuid& my_uuid) {
     try {
@@ -129,8 +130,8 @@ std::string UserHandler::conversionInput(const std::string& input) {
     return trimmedInput;
 }
 
-UserHandler::UserHandler(UserService& userService,RegisterService& registerService,LoginService &loginService): userService_(userService),registerService_(registerService)
-,loginService_(loginService){}
+UserHandler::UserHandler(UserService& userService,RegisterService& registerService,LoginService &loginService,KeyService& keyService): userService_(userService),registerService_(registerService)
+,loginService_(loginService),keyService_(keyService){}
 
 HttpResponse UserHandler::Register(const HttpRequest &request) {
     HttpResponse response;
@@ -292,17 +293,51 @@ HttpResponse UserHandler::LoginByEmail(const HttpRequest& request) {
             "Password must be a non-empty string"
         );
     }
+    std::string device_id;
+    const auto deviceIterator = body.find("device_id");
+    if (deviceIterator != body.end() && !deviceIterator->is_null()) {
+        if (!deviceIterator->is_string()) {
+            return ErrorResponseMaker(
+                HttpStatus::Bad_Request,
+                "invalid_device_id",
+                "device_id must be a UUID string or null"
+            );
+        }
+
+        device_id = deviceIterator->get<std::string>();
+    }
+    std::optional<boost::uuids::uuid> parsedDeviceId;
+    if (!device_id.empty()) {
+        try {
+            parsedDeviceId = boost::uuids::string_generator{}(device_id);
+        } catch (const std::runtime_error&) {
+            return ErrorResponseMaker(
+                HttpStatus::Bad_Request,
+                "invalid_device_id",
+                "device_id must be a valid UUID"
+            );
+        }
+    }
+
     std::string userEmail =emailIterator->get<std::string>();
     std::string userPassword =passwordIterator->get<std::string>();
     userEmail=toLower(conversionInput(userEmail));
     userPassword=conversionInput(userPassword);
     LoginServiceResult loginServiceResult=loginService_.loginByEmail(userEmail,userPassword);
     if (std::holds_alternative<UserToken>(loginServiceResult.login)) {
+
         const UserToken& user_token = std::get<UserToken>(loginServiceResult.login);
         const User &user=user_token.user;
         const std::string access_token=user_token.access_token;
         const std::string refresh_token=user_token.refresh_token;
         nlohmann::json body;
+        if (!parsedDeviceId) {
+            // Missing, null or empty device_id: no UUID parsing or device lookup.
+            body["device_status"] = "unregistered";
+        } else {
+            const bool verified = keyService_.verifyDeviceId(user.id, *parsedDeviceId);
+            body["device_status"] = verified ? "verified" : "unavailable";
+        }
         body["id"] = boost::uuids::to_string(user.id);
         body["display_name"] = user.display_name;
         body["username"] = user.username;
