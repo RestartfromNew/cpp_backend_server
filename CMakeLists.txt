@@ -92,6 +92,8 @@ add_executable(cpp_backend_server src/main.cpp
         include/domain/DeviceKeyBundle.h
         src/service/KeyService.cpp
         include/service/KeyService.h
+        src/handler/ChatHandler.cpp
+        include/handler/ChatHandler.h
 )
 target_include_directories(
         cpp_backend_server

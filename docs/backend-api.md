@@ -1,6 +1,6 @@
 # 服务器后端接口文档
 
-更新时间：2026-10-02。
+更新时间：2026-10-08。
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
@@ -43,6 +43,10 @@ X-User-Email: alice@example.com
 | --- | --- | --- | --- |
 | POST | `/register_by_email` | 不需要 | 邮箱密码注册 |
 | POST | `/login_by_email` | 不需要 | 邮箱密码登录并签发两种 Token |
+| POST | `/register_device` | 必须 | 登记设备及带签名预密钥 |
+| POST | `/upload_one_time_prekeys` | 必须 | 上传 1～10 个设备一次性公钥 |
+| POST | `/get_one_time_prekey` | 必须 | 领取好友设备的一次性预密钥 |
+| POST | `/friend_devices` | 必须 | 拉取一个好友的全部有效设备 |
 | POST | `/verify_access_token` | 必须 | 验证 Access Token，成功后进入受保护 Handler |
 | GET | `/refresh_token` | 不需要 | 验证 Refresh Token 并签发新的 Access Token |
 | GET | `/user` | 不需要 | 旧版按邮箱查询用户的调试接口，不建议继续依赖 |
@@ -569,3 +573,218 @@ Invoke-RestMethod -Method Get `
 
 验收应覆盖：无好友空数组、双方接受后互相可见、拒绝/取消不新增好友、
 无 token 返回 401、不能通过 Body 读取他人列表、重复接受不产生重复关系。
+
+
+## 13. 登记新设备
+
+### POST `/register_device`
+
+需要 `authorization: Bearer ACCESS_TOKEN`，用户 ID 由认证结果提供，请求无需 user_id。此接口调用 ChatHandler → KeyService → KeyRepository，在同一数据库事务插入 app.user_devices 和 app.device_key_bundles；任一插入失败回滚。当前新设备直接 active，不提供恢复 revoked 设备的功能。
+
+```json
+{
+  "device_name": "Alice手机",
+  "protocol_suite": "TEST-X25519-XEdDSA-HKDF-SHA256-v1",
+  "identity_public_key_hex": "替换为64个hex字符",
+  "signed_prekey_id": "42",
+  "signed_prekey_public_hex": "替换为64个hex字符",
+  "signed_prekey_signature_hex": "替换为128个hex字符"
+}
+```
+
+公钥和签名示例值是占位符，不可直接发送。
+
+| 字段 | 类型 | 校验 |
+|---|---|---|
+| device_name | string | 必填，非空且不能全为空白 |
+| protocol_suite | string | 必填，非空且不能全为空白；目前没有协议白名单或协商 |
+| identity_public_key_hex | string | 必填，32 字节公钥，即 64 个 hex 字符，无 0x/\x 前缀 |
+| signed_prekey_id | string | 必填，0～9223372036854775807 的十进制数字字符串，例如 "42"；JSON 数字 42 不接受 |
+| signed_prekey_public_hex | string | 必填，32 字节，即 64 个 hex 字符 |
+| signed_prekey_signature_hex | string | 必填，64 字节，即 128 个 hex 字符 |
+
+成功返回 `201 Created`：
+
+```json
+{
+  "device_id": "1204404a-4fd1-4419-8c87-99583872faa2",
+  "device_status": "active"
+}
+```
+
+响应 device_id 是实际新 UUID。客户端保存它，并在后续登录中提交。新设备 key_version=1，is_current=true，signed_prekey_id 来自请求，expires_at 暂为空。数据库公钥通过 decode(hex,'hex') 存入 BYTEA。
+
+| HTTP | code | 条件 |
+|---|---|---|
+| 400 | missing_request_body | 请求体为空 |
+| 400 | invalid_json | JSON 无效，或顶层不是对象 |
+| 400 | invalid_device_name / invalid_protocol_suite | 相应字段缺失、非字符串、空或全为空白 |
+| 400 | invalid_identity_public_key_hex / invalid_signed_prekey_public_hex / invalid_signed_prekey_signature_hex | 相应字段缺失、类型错误、空、长度或 hex 格式错误 |
+| 400 | invalid_signed_prekey_id | 缺失、非字符串、空、非十进制或超出非负 BIGINT 范围 |
+| 401 | invalid_access_token / access_token_expired | Router 的现有认证错误，未调用登记 Handler |
+| 503 | database_unavailable | DatabaseErrorKind::Connection |
+| 500 | register_device_failed | 其他数据库错误或意外异常；响应不泄露 SQL/公钥材料 |
+
+Windows PowerShell 示例：从此前生成的 A1 公钥包构造请求。修改文件路径与 token；当前 body.user_id 即使提供也不用于选择用户。应使用与该客户端一致的密钥，并在成功后将服务器返回的 UUID 更新到客户端存储。
+
+```powershell
+$accessToken = '替换为Alice登录返回的access_token'
+$bundle = Get-Content -LiteralPath 'C:\Users\yangb\Documents\Codex\2026-10-06\xian\outputs\test_keys\public_bundles\A1.json' -Raw | ConvertFrom-Json
+$body = @{
+    device_name = 'Alice手机'
+    protocol_suite = $bundle.protocol_suite
+    identity_public_key_hex = $bundle.identity_public_key_hex
+    signed_prekey_id = [string]$bundle.signed_prekey.key_id
+    signed_prekey_public_hex = $bundle.signed_prekey.public_key_hex
+    signed_prekey_signature_hex = $bundle.signed_prekey.signature_hex
+} | ConvertTo-Json -Compress
+
+Invoke-RestMethod -Method Post -Uri 'http://localhost:8082/register_device' -Headers @{ authorization = "Bearer $accessToken" } -ContentType 'application/json' -Body $body
+```
+
+当前范围：只登记设备和带签名预密钥，不写入一次性预密钥库存，不生成信封，不建立客户端加密会话。仅校验公钥/签名的 hex 编码和长度，Service 未做密码学签名验证，也未验证公钥安全性；不能把 active 当成上述检查已完成的证明。认证中间件目前仅检查用户 Token，账号停用后的 Token 策略沿用现有实现。
+
+本接口尚未提供 registration_id 幂等机制；重发请求可能创建多个设备。没有执行生产数据库请求；完整服务器编译和真实数据库联调结果需另行验证。
+
+
+### 14. 上传一次性预密钥
+
+`POST /upload_one_time_prekeys`，受保护路由；请求头 `authorization: Bearer <access_token>`。
+设备必须属于令牌对应的用户且状态为 `active`。客户端保留私钥，只上传公钥。
+
+```json
+{
+  "device_id": "c3939b6f-ee63-4448-b6ae-949a8bf47d49",
+  "prekeys": [
+    {"prekey_id": 1001, "public_key_hex": "06625dca527fc9b0fcad1acf661c5fed1e1cf85f25f403fa629b3e24b125d24a"}
+  ]
+}
+```
+
+每次 1～10 条；编号是 JSON 整数，范围 0～2147483647（当前 Repository 使用 C++ int）。
+公钥是 64 个十六进制字符，表示 32 字节。示例公钥只演示格式，实际须使用客户端生成的一次性公钥。
+同批编号不能重复；同设备已有编号不可覆盖或重新变为 available。
+Repository 在同一事务中插入整个批次，失败全部回滚。
+
+成功返回 `201`：
+```json
+{"device_id":"c3939b6f-ee63-4448-b6ae-949a8bf47d49","uploaded_count":1}
+```
+
+失败沿用 `{"error":{"code":"...","message":"..."}}`：
+
+| HTTP | code | 原因 |
+|---|---|---|
+| 400 | missing_request_body / invalid_json | 请求体缺失或不是 JSON 对象 |
+| 400 | invalid_device_id | 缺少 UUID 字符串或格式错误 |
+| 400 | invalid_prekeys / invalid_prekey | 批次不是 1～10 条数组或条目不是对象 |
+| 400 | invalid_prekey_id / invalid_public_key_hex | 编号或公钥格式错误 |
+| 400 | duplicate_prekey_id | 同批编号重复 |
+| 401 | 现有鉴权错误 | 未通过访问令牌验证 |
+| 403 | device_unavailable | 设备不属于当前用户、不存在或不是 active |
+| 409 | prekey_already_exists | 数据库已有同设备同编号 |
+| 503 | database_unavailable | 数据库连接不可用 |
+| 500 | upload_prekeys_failed | 其他内部错误 |
+
+Windows PowerShell 调用（先设置 `$accessToken` 和实际登记返回的 `$deviceId`）：
+```powershell
+$body = @{
+    device_id = $deviceId
+    prekeys = @(@{
+        prekey_id = 1001
+        public_key_hex = "06625dca527fc9b0fcad1acf661c5fed1e1cf85f25f403fa629b3e24b125d24a"
+    })
+} | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Method Post -Uri "http://localhost:8082/upload_one_time_prekeys" -Headers @{ authorization = "Bearer $accessToken" } -ContentType "application/json" -Body $body
+```
+
+本接口验证格式和设备归属，不证明客户端持有对应私钥。当前设备检查与插入分属两个 Repository 调用；若要求撤销与上传严格互斥，后续应在同一事务中锁定设备并检查状态。
+
+
+## 15. 领取好友设备的一次性预密钥
+
+`POST /get_one_time_prekey`，受保护路由，请求头 `authorization: Bearer <access_token>`。
+此接口会消耗一条 available 预密钥，仅在建立新会话需要它时调用。
+
+```json
+{"friend_id":"3755178b-3b3d-4cf4-9e61-0aba62fb2875","device_id":"6b73d84c-f23f-4932-8b4c-d320913914e3"}
+```
+
+friend_id 是目标好友的账号 UUID；device_id 必须是该好友的 active 设备。
+调用者来自访问令牌，不接受请求体中的 my_id/user_id 作为调用者身份。
+Service 先检查好友关系和设备归属；Repository 在同一事务内再次检查并以 FOR SHARE 锁定好友关系、目标设备和双方账号，要求双方账号 active。
+然后用 FOR UPDATE SKIP LOCKED 选择一条 available 记录，UPDATE 标记 claimed 并写入 claimed_at。
+提交成功之后才返回 HTTP；未通过权限检查不会领取预密钥。
+
+200 响应：
+```json
+{"friend_id":"3755178b-3b3d-4cf4-9e61-0aba62fb2875","device_id":"6b73d84c-f23f-4932-8b4c-d320913914e3","prekey_id":1001,"public_key_hex":"810a4c056c3f9c06bc7befa1851916f55c6cfed29730f8a24efe503e2ede8511"}
+```
+
+| HTTP | code | 原因 |
+|---|---|---|
+| 400 | missing_request_body / invalid_json | 请求体缺失或不是 JSON 对象 |
+| 400 | invalid_friend_id / invalid_device_id | UUID 字段缺失、类型或格式不正确 |
+| 401 | 现有鉴权错误 | 访问令牌无效或过期 |
+| 403 | not_friends | 调用者与目标用户没有好友关系 |
+| 403 | device_unavailable | 目标设备不存在、归属不符、非 active 或双方账号已停用 |
+| 404 | prekey_unavailable | 当前没有可领取的预密钥，包括剩余记录正在被其他事务锁定 |
+| 503 | database_unavailable | 数据库连接不可用 |
+| 500 | claim_prekey_failed | 其他内部错误 |
+
+Windows PowerShell 示例：使用 Alice 登录返回的 $login.access_token，领取 Bob 的设备预密钥。
+```powershell
+$claimBody = @{
+    friend_id = "3755178b-3b3d-4cf4-9e61-0aba62fb2875"
+    device_id = "6b73d84c-f23f-4932-8b4c-d320913914e3"
+} | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_one_time_prekey" -Headers @{ authorization = "Bearer $($login.access_token)" } -ContentType "application/json" -Body $claimBody
+```
+
+示例 friend_id 须替换成好友列表实际返回的账号 UUID（测试密钥文件中的账号编号不一定等于数据库账号编号）。
+返回内容只有一次性公钥资料，并非完整会话公钥包；建立会话还需要身份公钥、带签名预密钥及其签名。
+本接口没有请求幂等记录；重复调用会领取不同记录。响应丢失也不得将已 claimed 的记录重新投入库存。
+当前没有领取限流，上线前须增加以防好友耗尽库存。
+
+
+## 16. 拉取单个好友的全部有效设备
+
+受保护接口 `POST /friend_devices`，请求头 `authorization: Bearer <access_token>`。
+请求只接收一个目标好友 UUID；调用者身份来自令牌。
+```json
+{"friend_id":"好友列表实际返回的用户UUID"}
+```
+
+Service 先验证好友关系；Repository 查询中再次要求存在该关系，只返回目标好友的 active 设备，且双方账号必须 active。设备按 created_at、device_id 排序，不分页。
+成功返回 200：
+```json
+{
+  "friend_id":"好友UUID",
+  "devices":[{
+    "device_id":"好友设备UUID",
+    "device_name":"Alice的手机",
+    "status":"active",
+    "identity_public_key_hex":"64个十六进制字符",
+    "protocol_suite":"TEST-X25519-XEdDSA-HKDF-SHA256-v1"
+  }]
+}
+```
+没有有效设备时返回 `devices: []`，不是 404。账号停用也不返回设备；若好友关系在前置检查后已删除，查询返回空列表，不泄露设备。
+公钥由 BYTEA 编码为小写 hex；不返回私钥，不领取一次性预密钥。
+
+| HTTP | code | 原因 |
+|---|---|---|
+| 400 | missing_request_body / invalid_json | 请求体缺失或不是 JSON 对象 |
+| 400 | invalid_friend_id | UUID 缺失、类型或格式错误 |
+| 401 | 现有鉴权错误 | 令牌无效或过期 |
+| 403 | not_friends | 不存在好友关系 |
+| 503 | database_unavailable | 数据库连接不可用 |
+| 500 | fetch_friend_devices_failed | 其他内部错误 |
+
+PowerShell（$login 是当前用户登录结果，$friendId 来自好友列表）：
+```powershell
+$deviceQuery = @{ friend_id = $friendId } | ConvertTo-Json -Compress
+$friendDevices = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/friend_devices" -Headers @{ authorization = "Bearer $($login.access_token)" } -ContentType "application/json" -Body $deviceQuery
+$friendDevices | ConvertTo-Json -Depth 5
+```
+当前没有批量 user_ids 接口。收到设备列表后，按建立会话的需要调用 /get_one_time_prekey；不要每次同步就领取所有设备的一次性预密钥。

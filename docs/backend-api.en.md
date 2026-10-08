@@ -1,6 +1,6 @@
 # Backend API Documentation
 
-Last updated: 2026-10-02.
+Last updated: 2026-10-08.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
@@ -43,6 +43,10 @@ The client must calculate Content-Length; do not copy the example value 123. Aut
 | --- | --- | --- | --- |
 | POST | `/register_by_email` | Not required | Register with email and password |
 | POST | `/login_by_email` | Not required | Log in and issue both types of token |
+| POST | `/register_device` | Required | Register device and signed prekey |
+| POST | `/upload_one_time_prekeys` | Required | Upload 1–10 device one-time public keys |
+| POST | `/get_one_time_prekey` | Required | Claim a friend device one-time prekey |
+| POST | `/friend_devices` | Required | List all effective devices of one friend |
 | POST | `/verify_access_token` | Required | Verify an Access Token and enter a protected Handler |
 | GET | `/refresh_token` | Not required | Validate a Refresh Token and issue a new Access Token |
 | GET | `/user` | Not required | Legacy email-based user lookup for debugging; not recommended for further integration |
@@ -579,3 +583,77 @@ Invoke-RestMethod -Method Get `
 Acceptance checks: an empty array for no friends; mutual visibility after acceptance; no new friendship
 after rejection/cancellation; 401 without a token; no reading other users' lists through body fields;
 and no duplicate relationships after repeated acceptance.
+
+
+## 13. Register a New Device
+
+### POST `/register_device`
+
+Requires `authorization: Bearer ACCESS_TOKEN`. The authenticated route supplies user_id; a body-supplied user_id is not used. ChatHandler calls KeyService, whose repository inserts app.user_devices and app.device_key_bundles in one transaction. New devices are active; this does not reactivate revoked devices.
+
+Required JSON fields (all strings): device_name, protocol_suite, identity_public_key_hex, signed_prekey_id, signed_prekey_public_hex, signed_prekey_signature_hex. Names/suite must not be blank. Both public keys are 64 hex characters (32 bytes); signature is 128 hex characters (64 bytes), without prefixes. signed_prekey_id is a decimal string in 0..9223372036854775807; a JSON number is rejected.
+
+```json
+{
+  "device_name": "Alice phone",
+  "protocol_suite": "TEST-X25519-XEdDSA-HKDF-SHA256-v1",
+  "identity_public_key_hex": "REPLACE_WITH_64_HEX_CHARACTERS",
+  "signed_prekey_id": "42",
+  "signed_prekey_public_hex": "REPLACE_WITH_64_HEX_CHARACTERS",
+  "signed_prekey_signature_hex": "REPLACE_WITH_128_HEX_CHARACTERS"
+}
+```
+
+The key/signature values above are placeholders. Success is `201 Created`:
+
+```json
+{
+  "device_id": "1204404a-4fd1-4419-8c87-99583872faa2",
+  "device_status": "active"
+}
+```
+
+Save the returned UUID in the matching client and submit it on subsequent logins. Key version is 1, is_current=true, expires_at is currently null, and hex values are decoded into BYTEA.
+
+Errors: 400 missing_request_body or invalid_json; 400 invalid_<field> for missing/non-string/empty fields, invalid key/signature hex lengths, blank names/suite, or invalid prekey ID. Router returns 401 invalid_access_token/access_token_expired before invoking this handler. Connection DatabaseError maps to 503 database_unavailable; other database/standard exceptions map to 500 register_device_failed. Error responses do not include SQL or key material.
+
+See the Chinese version's PowerShell example to map the generated A1 fixture into this flat JSON request. This endpoint does not populate one-time prekey inventory or create sessions/envelopes. It checks encoding/length only: cryptographic signature verification, public-key safety validation, suite whitelisting, and registration-id idempotency are not implemented. Retry can create another device. Account disabling/token rules remain those of existing middleware. No production requests were executed; full server build and database integration remain separate verification steps.
+
+
+### 14. Upload one-time prekeys
+
+Protected `POST /upload_one_time_prekeys`, with `authorization: Bearer <access_token>`.
+The device must belong to the authenticated user and be active. Private keys stay on the client.
+
+```json
+{"device_id":"c3939b6f-ee63-4448-b6ae-949a8bf47d49","prekeys":[{"prekey_id":1001,"public_key_hex":"06625dca527fc9b0fcad1acf661c5fed1e1cf85f25f403fa629b3e24b125d24a"}]}
+```
+
+Upload 1–10 entries. Each ID is a JSON integer in 0–2147483647 (the existing Repository uses C++ int); each public key is 64 hex characters encoding 32 bytes. Generate actual one-time public keys on the client; the example only demonstrates the format.
+IDs must be unique within the batch and must not already exist for this device. The Repository inserts the batch in one transaction; any failure rolls back the entire batch.
+
+Success: `201`, `{"device_id":"c3939b6f-ee63-4448-b6ae-949a8bf47d49","uploaded_count":1}`.
+Errors use the existing error/code/message envelope: 400 for invalid input or duplicate IDs within the batch; 401 for authentication failure; 403 `device_unavailable`; 409 `prekey_already_exists`; 503 `database_unavailable`; 500 `upload_prekeys_failed`.
+Validation checks encoding and device ownership, not possession of the private key. The ownership check and insertion currently use separate Repository calls; strict serialization with device revocation requires a device lock and status check in the insertion transaction.
+
+
+## 15. Claim a friend's device one-time prekey
+
+Protected `POST /get_one_time_prekey`, with `authorization: Bearer <access_token>`.
+Request: `{"friend_id":"FRIEND_UUID","device_id":"FRIEND_DEVICE_UUID"}`.
+Both fields must be canonical UUID strings. The caller is supplied by authentication, never by the request body.
+The Service verifies friendship and active device ownership before claiming. The Repository rechecks authorization in one transaction, locks the friendship, device and both account rows with FOR SHARE, and requires both accounts to be active. It then claims one available prekey using FOR UPDATE SKIP LOCKED and UPDATE RETURNING. A response is sent only after commit; denied requests consume no keys.
+200: `{"friend_id":"FRIEND_UUID","device_id":"FRIEND_DEVICE_UUID","prekey_id":1001,"public_key_hex":"64_HEX_CHARACTERS"}`.
+400: missing_request_body, invalid_json, invalid_friend_id or invalid_device_id. 401: existing token errors. 403: not_friends or device_unavailable. 404: prekey_unavailable (including temporarily locked remaining records). 503: database_unavailable. 500: claim_prekey_failed.
+This returns only a one-time prekey, not a complete session bundle. Retry is not idempotent and may consume a different key; claimed keys must not be returned to inventory after response loss. Claim rate limiting is not yet implemented.
+
+
+## 16. List one friend's effective devices
+
+Protected `POST /friend_devices`, header `authorization: Bearer <access_token>`.
+Request: `{"friend_id":"FRIEND_USER_UUID"}`. The caller comes from authentication.
+The Service checks friendship before querying. The Repository also requires friendship in the device query, active accounts on both sides and active target devices. All matching devices are returned, ordered by created_at and device_id.
+200: `{"friend_id":"FRIEND_USER_UUID","devices":[{"device_id":"DEVICE_UUID","device_name":"Alice phone","status":"active","identity_public_key_hex":"64_HEX_CHARACTERS","protocol_suite":"TEST-X25519-XEdDSA-HKDF-SHA256-v1"}]}`.
+No effective devices produces `devices: []`, not 404. Inactive accounts and a friendship removed after the initial check produce no device data. Public keys are lowercase hex. No private keys or one-time prekeys are returned or consumed.
+400: missing_request_body, invalid_json or invalid_friend_id. 401: existing token errors. 403: not_friends. 503: database_unavailable. 500: fetch_friend_devices_failed.
+This endpoint accepts one friend only; no batch user_ids endpoint exists yet.

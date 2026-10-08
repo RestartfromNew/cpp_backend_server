@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include "common/UniqueFd.h"
 #include "handler/UserHandler.h"
+#include "handler/ChatHandler.h"
 #include "http/HttpParse.h"
 #include "handler/Router.h"
 #include "repository/UserRepository.h"
@@ -111,9 +112,38 @@ int main()
         AuthMiddleWare authMiddleWare{accessTokenService};
         LoginService loginService{userRepository,refreshTokenService,accessTokenService};
         KeyRepository keyRepository{databasePool};
-        KeyService keyService{keyRepository};
+        KeyService keyService{keyRepository,userRepository};
         UserHandler userHandler{userService,registerService,loginService,keyService};
+        ChatHandler chatHandler{keyService};
         Router router{authMiddleWare};
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/register_device",
+            [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return chatHandler.registerNewDevice(request, user_id);
+            }
+        );
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/upload_one_time_prekeys",
+            [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return chatHandler.uploadOneTimePrekeys(request, user_id);
+            }
+        );
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/get_one_time_prekey",
+            [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return chatHandler.getOneTimePrekey(request, user_id);
+            }
+        );
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/friend_devices",
+            [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return chatHandler.fetchFriendDevices(request, user_id);
+            }
+        );
         //注册路由，如果方法为Get,路径为path,就调用userHanler.getUser方法
         router.addRoute(
             HttpMethod::GET,
@@ -208,8 +238,8 @@ int main()
         );
 
         //启动服务
-        // TcpServer server{"0.0.0.0",8081};
-        TcpServer server{"0.0.0.0",8082};
+        TcpServer server{"0.0.0.0",8081};
+        //TcpServer server{"0.0.0.0",8082};
         server.start();
         ThreadPoolConfig thread_pool_config{4,8};
         WebSocketPoolConfig web_socket_pool_config{4,100};

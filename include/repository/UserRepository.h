@@ -43,6 +43,7 @@ public:
     std::vector<User> FetchFriends(const boost::uuids::uuid& my_id);
     FriendRequestProcessResult processFriendshipRequest(const boost::uuids::uuid& my_id,
         const boost::uuids::uuid& request_id, FriendRequestAction action);
+    bool VerifyFriendShip(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id);
 
 private:
     DatabasePool &databasePool_;

@@ -288,3 +288,17 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
         return FriendRequestProcessResult::Success;
     });
 }
+bool UserRepository::VerifyFriendShip(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id) {
+    const std::string Parameters[] = {boost::uuids::to_string(my_id),boost::uuids::to_string(friend_id)};
+    ConnectionLease lease{databasePool_};
+    auto result = lease.connection().execute(
+       R"(
+            SELECT fr.id
+            FROM app.friend_relation AS fr
+            WHERE fr.user_id = $1 and fr.friend_id = $2
+        )",
+       Parameters
+   );
+    if (result.rowCount() == 0) return false;
+    return true;
+}

@@ -333,9 +333,14 @@ HttpResponse UserHandler::LoginByEmail(const HttpRequest& request) {
         nlohmann::json body;
         if (!parsedDeviceId) {
             // Missing, null or empty device_id: no UUID parsing or device lookup.
+            //unregistered进入注册流程，unavailable进入恢复流程
             body["device_status"] = "unregistered";
         } else {
-            const bool verified = keyService_.verifyDeviceId(user.id, *parsedDeviceId);
+            auto verified = keyService_.verifyDeviceId(user.id, *parsedDeviceId);
+            if (verified==std::nullopt) {
+                body["device_status"] ="unregistered";
+            }
+            else
             body["device_status"] = verified ? "verified" : "unavailable";
         }
         body["id"] = boost::uuids::to_string(user.id);
