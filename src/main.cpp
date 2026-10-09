@@ -144,6 +144,13 @@ int main()
                 return chatHandler.fetchFriendDevices(request, user_id);
             }
         );
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/get_device_key_bundle",
+            [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return chatHandler.getDeviceKeyBundle(request, user_id);
+            }
+        );
         //注册路由，如果方法为Get,路径为path,就调用userHanler.getUser方法
         router.addRoute(
             HttpMethod::GET,

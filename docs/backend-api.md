@@ -47,6 +47,7 @@ X-User-Email: alice@example.com
 | POST | `/upload_one_time_prekeys` | 必须 | 上传 1～10 个设备一次性公钥 |
 | POST | `/get_one_time_prekey` | 必须 | 领取好友设备的一次性预密钥 |
 | POST | `/friend_devices` | 必须 | 拉取一个好友的全部有效设备 |
+| POST | `/get_device_key_bundle` | 必须 | 获取好友设备的带签名预密钥资料 |
 | POST | `/verify_access_token` | 必须 | 验证 Access Token，成功后进入受保护 Handler |
 | GET | `/refresh_token` | 不需要 | 验证 Refresh Token 并签发新的 Access Token |
 | GET | `/user` | 不需要 | 旧版按邮箱查询用户的调试接口，不建议继续依赖 |
@@ -788,3 +789,24 @@ $friendDevices = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/frie
 $friendDevices | ConvertTo-Json -Depth 5
 ```
 当前没有批量 user_ids 接口。收到设备列表后，按建立会话的需要调用 /get_one_time_prekey；不要每次同步就领取所有设备的一次性预密钥。
+
+
+## 17. 获取好友设备的带签名预密钥资料
+
+受保护接口 `POST /get_device_key_bundle`，请求头 `authorization: Bearer <access_token>`。
+```json
+{"friend_id":"好友账号UUID","device_id":"好友设备UUID"}
+```
+调用者来自访问令牌。Repository 的查询要求双方是好友、双方账号 active、设备属于目标好友且 active、bundle 是当前版本且未过期。
+200 响应：
+```json
+{"friend_id":"好友账号UUID","device_id":"好友设备UUID","signed_prekey_id":42,"signed_prekey_public_hex":"64个hex字符","signed_prekey_signature_hex":"128个hex字符","is_current":true}
+```
+BYTEA 编码为小写 hex。本接口按当前 DeviceKeyBundle 类型返回带签名预密钥及签名，不含一次性预密钥，不会消耗库存。身份公钥和 protocol_suite 从 /friend_devices 获取；当前类型未返回 key_version、published_at、expires_at。本响应单独不足以构成完整会话初始化包。
+400: missing_request_body / invalid_json / invalid_friend_id / invalid_device_id；401: 现有鉴权错误；404: key_bundle_unavailable（统一表示关系、归属、状态或资料不可用）；503: database_unavailable；500: fetch_key_bundle_failed。
+
+```powershell
+$bundleBody = @{ friend_id = $friendId; device_id = $friendDeviceId } | ConvertTo-Json -Compress
+$bundle = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_device_key_bundle" -Headers @{ authorization = "Bearer $($login.access_token)" } -ContentType "application/json" -Body $bundleBody
+$bundle | ConvertTo-Json -Depth 5
+```

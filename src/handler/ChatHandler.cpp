@@ -365,3 +365,81 @@ HttpResponse ChatHandler::fetchFriendDevices(
             "fetch_friend_devices_failed", "Unable to fetch friend devices");
     }
 }
+
+HttpResponse ChatHandler::getDeviceKeyBundle(
+    const HttpRequest& request, const boost::uuids::uuid& user_id) {
+    if (request.body.empty()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "missing_request_body", "Request body is required");
+    }
+    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "invalid_json", "Request body must be a valid JSON object");
+    }
+    boost::uuids::uuid friendId, deviceId;
+    for (const auto* field : {"friend_id", "device_id"}) {
+        const auto value = body.find(field);
+        if (value == body.end() || !value->is_string()) {
+            return ErrorResponseMaker(HttpStatus::Bad_Request,
+                std::string{"invalid_"} + field, std::string{field} + " must be a UUID string");
+        }
+        const auto& text = value->get_ref<const std::string&>();
+        try {
+            if (text.size() != 36 || text[8] != '-' || text[13] != '-' ||
+                text[18] != '-' || text[23] != '-') {
+                throw std::invalid_argument("Invalid UUID format");
+            }
+            const auto id = boost::uuids::string_generator{}(text);
+            if (std::string_view{field} == "friend_id") {
+                friendId = id;
+            } else {
+                deviceId = id;
+            }
+        } catch (const std::exception&) {
+            return ErrorResponseMaker(HttpStatus::Bad_Request,
+                std::string{"invalid_"} + field, std::string{field} + " must be a UUID string");
+        }
+    }
+    try {
+        const auto result = keyService_.getDeviceKeyBundle(friendId, user_id, deviceId);
+        if (!result) {
+            return ErrorResponseMaker(HttpStatus::Not_Found,
+                "key_bundle_unavailable", "Target device key bundle is unavailable");
+        }
+        const auto toHex = [](const std::vector<std::uint8_t>& bytes) {
+            constexpr char digits[] = "0123456789abcdef";
+            std::string hex;
+            hex.reserve(bytes.size() * 2);
+            for (const auto byte : bytes) {
+                hex.push_back(digits[byte >> 4]);
+                hex.push_back(digits[byte & 0x0f]);
+            }
+            return hex;
+        };
+        HttpResponse response;
+        response.status = HttpStatus::Ok;
+        response.headers["Content-Type"] = "application/json";
+        response.body = nlohmann::json{
+            {"friend_id", boost::uuids::to_string(friendId)},
+            {"device_id", boost::uuids::to_string(result->device_id)},
+            {"signed_prekey_id", result->signed_preKey_id},
+            {"signed_prekey_public_hex", toHex(result->preKey_public)},
+            {"signed_prekey_signature_hex", toHex(result->preKey_signature)},
+            {"is_current", result->is_current}
+        }.dump();
+        return response;
+    } catch (const DatabaseError& error) {
+        std::cerr << "[getDeviceKeyBundle] database failure; SQLSTATE=" << error.code() << '\n';
+        if (error.kind() == DatabaseErrorKind::Connection) {
+            return ErrorResponseMaker(HttpStatus::Service_Unavailable,
+                "database_unavailable", "Service temporarily unavailable");
+        }
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
+            "fetch_key_bundle_failed", "Unable to fetch device key bundle");
+    } catch (const std::exception&) {
+        std::cerr << "[getDeviceKeyBundle] unexpected failure\n";
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
+            "fetch_key_bundle_failed", "Unable to fetch device key bundle");
+    }
+}

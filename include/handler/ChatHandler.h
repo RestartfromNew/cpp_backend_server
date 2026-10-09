@@ -19,6 +19,8 @@ public:
         const boost::uuids::uuid& user_id);
     HttpResponse fetchFriendDevices(const HttpRequest& request,
         const boost::uuids::uuid& user_id);
+    HttpResponse getDeviceKeyBundle(const HttpRequest& request,
+        const boost::uuids::uuid& user_id);
     private:
     KeyService& keyService_;
 };

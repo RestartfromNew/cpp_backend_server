@@ -97,3 +97,6 @@ PrekeyClaimResult KeyService::getOneTimePrekey(
     // The Repository repeats authorization under row locks before consuming a key.
     return keyRepository_.getOneTimeKey(my_id, friend_id, device_id);
 }
+std::optional<DeviceKeyBundle> KeyService::getDeviceKeyBundle(const boost::uuids::uuid& friend_id,const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id) {
+    return keyRepository_.getDeviceKeyBundle(friend_id,my_id,device_id);
+}

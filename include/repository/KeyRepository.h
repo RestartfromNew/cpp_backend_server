@@ -4,7 +4,7 @@
 
 #ifndef CPP_BACKEND_SERVER_KEYREPOSITORY_H
 #define CPP_BACKEND_SERVER_KEYREPOSITORY_H
-#include "RefreshTokenRepository.h"
+    #include "RefreshTokenRepository.h"
 #include "databases/DatabaseConnection.h"
 #include "boost/uuid/uuid_io.hpp"
 #include "databases/DatabaseError.h"
@@ -29,6 +29,8 @@ public:
     void createNewOnetimeKey(const boost::uuids::uuid &device_id,std::unordered_map<int,std::string> prekey_record);
     PrekeyClaimResult getOneTimeKey(const boost::uuids::uuid& my_id,
         const boost::uuids::uuid& friend_id, const boost::uuids::uuid& device_id);
+    std::optional<DeviceKeyBundle> getDeviceKeyBundle(const boost::uuids::uuid &friend_id,const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id);
+
 private:
     DatabasePool &databasePool_;
 };

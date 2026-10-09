@@ -47,6 +47,7 @@ The client must calculate Content-Length; do not copy the example value 123. Aut
 | POST | `/upload_one_time_prekeys` | Required | Upload 1–10 device one-time public keys |
 | POST | `/get_one_time_prekey` | Required | Claim a friend device one-time prekey |
 | POST | `/friend_devices` | Required | List all effective devices of one friend |
+| POST | `/get_device_key_bundle` | Required | Fetch a friend device signed prekey bundle |
 | POST | `/verify_access_token` | Required | Verify an Access Token and enter a protected Handler |
 | GET | `/refresh_token` | Not required | Validate a Refresh Token and issue a new Access Token |
 | GET | `/user` | Not required | Legacy email-based user lookup for debugging; not recommended for further integration |
@@ -657,3 +658,13 @@ The Service checks friendship before querying. The Repository also requires frie
 No effective devices produces `devices: []`, not 404. Inactive accounts and a friendship removed after the initial check produce no device data. Public keys are lowercase hex. No private keys or one-time prekeys are returned or consumed.
 400: missing_request_body, invalid_json or invalid_friend_id. 401: existing token errors. 403: not_friends. 503: database_unavailable. 500: fetch_friend_devices_failed.
 This endpoint accepts one friend only; no batch user_ids endpoint exists yet.
+
+
+## 17. Fetch a friend device signed prekey bundle
+
+Protected `POST /get_device_key_bundle`, header `authorization: Bearer <access_token>`.
+Request: `{"friend_id":"FRIEND_UUID","device_id":"DEVICE_UUID"}`.
+The Repository checks friendship, active accounts, active device ownership, and a current unexpired bundle. Caller identity is supplied by authentication.
+200: `{"friend_id":"FRIEND_UUID","device_id":"DEVICE_UUID","signed_prekey_id":42,"signed_prekey_public_hex":"64_HEX_CHARACTERS","signed_prekey_signature_hex":"128_HEX_CHARACTERS","is_current":true}`.
+This matches the current DeviceKeyBundle model: signed prekey and signature only. Identity public key and protocol suite are obtained from /friend_devices; key_version and timestamps are not returned. This response alone is not a complete session initialization bundle. No one-time prekey is consumed.
+400: missing_request_body, invalid_json, invalid_friend_id or invalid_device_id. 401: existing authentication errors. 404: key_bundle_unavailable. 503: database_unavailable. 500: fetch_key_bundle_failed.

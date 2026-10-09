@@ -32,6 +32,7 @@ class KeyService {
         const boost::uuids::uuid& device_id,
         const std::unordered_map<int, std::string>& prekeys);
     PrekeyClaimResult getOneTimePrekey(const boost::uuids::uuid &my_id,const boost::uuids::uuid& friend_id,const boost::uuids::uuid& device_id);
+    std::optional<DeviceKeyBundle> getDeviceKeyBundle(const boost::uuids::uuid& friend_id,const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id);
 private:
     KeyRepository &keyRepository_;
     UserRepository &userRepository_;

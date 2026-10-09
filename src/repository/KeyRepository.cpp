@@ -7,6 +7,22 @@
 #include <boost/uuid/random_generator.hpp>
 
 namespace {
+    int parseInt(std::string_view text) {
+        int value = 0;
+
+        const auto [end, error] = std::from_chars(
+            text.data(),
+            text.data() + text.size(),
+            value
+        );
+
+        if (error != std::errc{} ||
+            end != text.data() + text.size()) {
+            throw std::invalid_argument("Invalid integer or out of range");
+            }
+
+        return value;
+    }
     //这个命名空间是cpp内部的，只在这里使用
     boost::uuids::uuid parseId(std::string_view text)
     {
@@ -309,4 +325,59 @@ std::vector<Device> KeyRepository::GetFriendDevicesByUserId(
         });
     }
     return devices;
+}
+
+std::optional<DeviceKeyBundle> KeyRepository::getDeviceKeyBundle(const boost::uuids::uuid &friend_id,const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id) {
+    const std::string parameters[] = {boost::uuids::to_string(my_id), boost::uuids::to_string(friend_id), boost::uuids::to_string(device_id)};
+    ConnectionLease lease(databasePool_);
+    auto result = lease.connection().execute(
+    R"(
+        SELECT
+            kb.device_id,
+            kb.key_version,
+            ud.identity_public_key,
+            ud.protocol_suite,
+            kb.signed_prekey_id,
+            kb.signed_prekey_public,
+            kb.signed_prekey_signature,
+            kb.published_at,
+            kb.expires_at
+        FROM app.device_key_bundles AS kb
+        JOIN app.user_devices AS ud
+            ON ud.device_id = kb.device_id
+        JOIN app.users AS friend_user
+            ON friend_user.id = ud.user_id
+        JOIN app.users AS my_user
+            ON my_user.id = $1::uuid
+        WHERE ud.user_id = $2::uuid
+          AND ud.device_id = $3::uuid
+          AND ud.status = 'active'
+          AND friend_user.is_active = TRUE
+          AND my_user.is_active = TRUE
+          AND kb.is_current = TRUE
+          AND (
+              kb.expires_at IS NULL
+              OR kb.expires_at > CURRENT_TIMESTAMP
+          )
+          AND EXISTS (
+              SELECT 1
+              FROM app.friend_relation AS fr
+              WHERE fr.user_id = $1::uuid
+                AND fr.friend_id = $2::uuid
+          )
+    )",
+    parameters
+);
+
+    if (result.rowCount() == 0) {
+        return std::nullopt;
+    }
+    DeviceKeyBundle deviceKeyBundle{
+        .device_id = parseId(result.value(0, 0)),
+        .signed_preKey_id = parseInt(result.value(0,4)),
+        .preKey_public = parseBytea(result.value(0,5)),
+        .preKey_signature = parseBytea(result.value(0,6)),
+        .is_current = true
+    };
+    return deviceKeyBundle;
 }

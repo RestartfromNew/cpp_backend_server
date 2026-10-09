@@ -12,6 +12,7 @@ struct DeviceKeyBundle {
     std::vector<std::uint8_t> preKey_public;
     std::vector<std::uint8_t> preKey_signature;
     bool is_current;
+
 };
 
 #endif //CPP_BACKEND_SERVER_DEVICEKEYBUNDLE_H
