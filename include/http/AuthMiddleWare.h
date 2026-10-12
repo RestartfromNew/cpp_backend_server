@@ -21,6 +21,7 @@ class AuthMiddleWare {
     explicit AuthMiddleWare(AccessTokenService &accessTokenService);
     ~AuthMiddleWare()=default;
     AuthResult authenticate(const HttpRequest &request)const;
+    AuthResult authenticate(const std::string& authorization) const;
 private:
     AccessTokenService &accessTokenService_;
 };

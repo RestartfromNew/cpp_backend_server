@@ -7,18 +7,29 @@
 #include <functional>
 #include <nlohmann/json_fwd.hpp>
 #include <nlohmann/json.hpp>
+#include <http/AuthMiddleWare.h>
+#include <optional>
+#include <service/ChatService.h>
 
 class ServiceThreadPool;
+struct ParsedNewMessage {
+    boost::uuids::uuid sender_device_id;
+    NewTextMessageRequest request;
+};
+
 
 class WebSocketDispatcher {
     public:
     using Task=std::function<void()>;
     using Reply = std::function<void(nlohmann::json)>;
     //这个东西负责协调两个池
-    explicit WebSocketDispatcher(ServiceThreadPool &threadPool);
+    explicit WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare);
     void dispatch(nlohmann::json frame,Reply reply);
 private:
+    std::optional<ParsedNewMessage> parseNewMessage(const nlohmann::json& payload,const Reply& reply) const;
     ServiceThreadPool &threadPool_;
+    AuthMiddleWare &AuthMiddleWare_;
+
 };
 
 

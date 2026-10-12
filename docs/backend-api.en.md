@@ -1,6 +1,6 @@
 # Backend API Documentation
 
-Last updated: 2026-10-08.
+Last updated: 2026-10-12.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
@@ -668,3 +668,176 @@ The Repository checks friendship, active accounts, active device ownership, and 
 200: `{"friend_id":"FRIEND_UUID","device_id":"DEVICE_UUID","signed_prekey_id":42,"signed_prekey_public_hex":"64_HEX_CHARACTERS","signed_prekey_signature_hex":"128_HEX_CHARACTERS","is_current":true}`.
 This matches the current DeviceKeyBundle model: signed prekey and signature only. Identity public key and protocol suite are obtained from /friend_devices; key_version and timestamps are not returned. This response alone is not a complete session initialization bundle. No one-time prekey is consumed.
 400: missing_request_body, invalid_json, invalid_friend_id or invalid_device_id. 401: existing authentication errors. 404: key_bundle_unavailable. 503: database_unavailable. 500: fetch_key_bundle_failed.
+
+
+## 18. WebSocket API (current implementation)
+
+This section follows HttpSession, WebsocketWorker, WebSocketSession/Handler/Dispatcher, ChatService and EnvelopeRepository. It documents current code, not proposed interfaces. Only a single-recipient storage request and a test route are implemented. Recipient push, delivery ACKs, history synchronization and standalone connection authentication are not implemented.
+
+### 18.1 Endpoint, upgrade and authentication
+
+Local example: `ws://127.0.0.1:8082/websocket-test`. main listens on 0.0.0.0:8082. Public deployment should use a configured TLS proxy and WSS; proxy routes have not been verified here.
+
+```http
+GET /websocket-test HTTP/1.1
+Host: localhost:8082
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+```
+
+The sample key is a fixed test vector. Real clients should generate a fresh random 16-byte key and Base64-encode it for each connection. Key response headers:
+
+```http
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
+
+Accept is SHA-1 of the client key concatenated with the WebSocket GUID, then Base64; this is not message encryption. The example omits other response headers.
+
+Currently HttpSession forwards requests with Upgrade:websocket without HTTP Router path/auth checks. Worker explicitly requires a non-empty, exactly named Sec-WebSocket-Key; full method, Connection, Version and key-length validation is absent. `/websocket-test` is an example path, not an authenticated dedicated HTTP route.
+
+Every application request carries string `authorization` or `Authorization`, containing the exact prefix `Bearer ` and an Access Token. Lowercase takes precedence; invalid lowercase values do not fall back to uppercase. The handshake does not authenticate users or bind a device to the connection.
+
+### 18.2 Frame and JSON rules
+
+| Item | Current behavior |
+|---|---|
+| Business data | FIN=1 Text frame, UTF-8 JSON object |
+| Client masking | Required; unmasked frames are protocol errors |
+| Server masking | Not used |
+| RSV/compression | RSV must be zero; no permessage-deflate |
+| Frame payload limit | 1,048,576 bytes for the complete JSON payload |
+| Length encoding | 7/16/64-bit lengths; non-minimal/invalid encodings rejected |
+| Fragmentation | FIN=0 data and Continuation frames are rejected |
+| TCP segmentation | Incomplete frame bytes can be buffered; this differs from message fragmentation |
+| Binary | Parsed into an array, then fails current object-payload validation |
+| Non-JSON Text, arrays, scalars, null | invalid_payload |
+
+Send the application JSON directly, without the server-internal header/payload_format/payload wrapper. Missing/unknown type behavior is documented in 18.7.
+
+### 18.3 Storage request: chat.newTextMessage
+
+One request targets one recipient device. Replace example UUIDs with actual registered devices and a client-generated message identifier.
+
+```json
+{
+  "type":"chat.newTextMessage",
+  "authorization":"Bearer ACCESS_TOKEN",
+  "sender_device_id":"f7ab7d41-9955-4a73-922d-7b7a80ebdac4",
+  "message_id":"4ffded1c-d415-4adb-a888-703116dc192e",
+  "recipient_device_id":"6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "protocol_version":"TEST-OPAQUE-v1",
+  "packet_base64":"AQID"
+}
+```
+
+| Field | Type | Required rules |
+|---|---|---|
+| type | string | Exactly chat.newTextMessage, case-sensitive |
+| authorization | string | Bearer token; Authorization is also accepted |
+| sender_device_id | string | Canonical 36-character, non-nil UUID; ownership checked in DB |
+| message_id | string | Stable non-nil client retry UUID, not the database envelope UUID |
+| recipient_device_id | string | Canonical non-nil UUID, different from sender device |
+| protocol_version | string | Non-empty, non-blank, at most128 bytes; no suite allowlist or internal packet-version check yet |
+| packet_base64 | string | Standard padded Base64, length divisible by4, no whitespace; decoded1–65536 bytes |
+
+Encoded Base64 is limited to87,384 characters; the decoder checks full consumption and actual output size. Extra fields are ignored. No request_id, conversation_id, input seq or envelopes array is used.
+
+AQID encodes test bytes01 02 03, not an encrypted protocol packet. The server stores opaque decoded BYTEA and cannot verify ratchet correctness or decryptability. Actual E2EE requires the client's real protocol implementation.
+
+### 18.4 Authorization and ordering
+
+user_id comes from the token; sender_device_id is merely a requested sending identity. The storage transaction checks/locks sender ownership, active devices and accounts, different accounts and both directional friendship records. Same-account device synchronization is not supported by this route.
+
+A canonical unordered device-pair transaction advisory lock protects MAX(seq)+1 allocation. A1→B1 and B1→A1 share a sequence; other pairs have independent sequences starting at1. seq is an integer, not a timestamp, cryptographic counter or global synchronization watermark.
+
+Success is returned after commit, without pushing to Bob; Bob may be offline. Review the schema in [prepare-envelope-message-storage.sql](prepare-envelope-message-storage.sql). message_id must no longer reference app.message(id); an old FK can produce23503 mapped to internal_server_error. This documentation update does not execute migrations.
+
+### 18.5 Successful storage and retry
+
+```json
+{"type":"newTextMessage.result","success":true,"duplicate":false,"message_id":"4ffded1c-d415-4adb-a888-703116dc192e","envelope_id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee","seq":1}
+```
+
+```json
+{"type":"newTextMessage.result","success":true,"duplicate":true,"message_id":"4ffded1c-d415-4adb-a888-703116dc192e","envelope_id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee","seq":1}
+```
+
+Retry scope is(sender_device_id, recipient_device_id, message_id). Matching protocol_version and decoded packet returns the original envelope_id/seq without another insert. Changed content produces envelope_conflict. Reusing message_id for another recipient is a separate scope.
+
+success means persisted, not delivered, decrypted or read. Permission checks precede retry lookup, so revocation/friend removal can deny a previously saved request. Do not delete the highest-sequence row without preserving a watermark: MAX+1 could reuse its sequence.
+
+### 18.6 Error responses: two actual shapes
+
+Object/authentication errors have no success/message fields:
+
+```json
+{"type":"error","error":{"code":"missing_authorization"}}
+```
+
+| code | Trigger |
+|---|---|
+| invalid_payload | Application payload is not a JSON object |
+| missing_authorization | Authorization fields missing or not strings |
+| invalid_access_token | Empty string, wrong prefix or failed token validation |
+| access_token_expired | Expired token |
+
+Formal message validation/business errors:
+
+```json
+{"type":"newTextMessage.result","success":false,"error":{"code":"send_permission_denied","message":"Sender or recipient is not permitted"}}
+```
+
+| code | Meaning / message |
+|---|---|
+| invalid_request | Specific parser description, or Invalid message fields from Service |
+| send_permission_denied | Sender or recipient is not permitted |
+| envelope_conflict | Message identifier already exists with different content |
+| database_unavailable | Retry later with the same message identifier and packet |
+| retry_later | Same retry advice; bounded transaction attempts exhausted |
+| server_busy | Service task was not queued |
+| internal_server_error | Missing storage result / Unable to save message / Unable to process message / Unable to parse message |
+
+These are application messages, not HTTP status codes. Failures generally lack message_id, envelope_id, seq and request_id; clients cannot assume UUID correlation for concurrent failures. Branch on code, not display message. Connection failure at commit or response timeout does not prove nothing was persisted.
+
+Retries keep the original message_id, recipient, protocol_version and packet. Do not encrypt again under the old identifier. Service attempts at most3 whole transactions for40001,40P01 and identified envelope primary-key UUID collisions. SQLSTATE is not returned to clients. Do not bypass conflicts by blindly replacing identifiers.
+
+### 18.7 Test route and incomplete invalid-input handling
+
+```json
+{"type":"chat.newTextMessage_Test","authorization":"Bearer ACCESS_TOKEN","id":"test-1","message":"hello"}
+```
+
+```json
+{"type":"newTextMessage.result","success":true,"id":"test-1"}
+```
+
+The test route calls printId only: no envelope persistence, sequence, sending-device or friendship validation. id/message should be strings, but direct field conversions lack comprehensive error replies; task exceptions can produce only logs.
+
+Unknown type reaches UnKnown and returns without a reply: **unsupported_type is not currently emitted**. Missing/non-string type can throw before task dispatch, with no guaranteed application response. Clients must send a recognized string type; not every malformed input receives a structured result.
+
+### 18.8 Ping, Pong, Close and disconnects
+
+| Opcode | Handling |
+|---|---|
+| Ping0x9 | Queue Pong with the same payload; bypass business authentication |
+| Pong0xA | Clear pending Pong and update activity; payload correspondence is not checked |
+| Close0x8 | Queue a Close echo, then close the connection |
+
+Control frames require FIN=1 and≤125 bytes; Close length1 is invalid. Protocol errors, missing mask, RSV, oversize and unsupported fragmentation follow the close/error path, not JSON business replies.
+
+Heartbeat checks run every5 seconds. After more than30 seconds of inactivity with no pending Pong, the server sends an empty Ping. At10 seconds waiting for Pong it removes the connection, subject to timer granularity. Application activity does not clear an already pending Pong requirement. Respond with a WebSocket Pong frame, not a JSON string.
+
+Reply tasks return to the original Worker and validate fd/session_id to prevent descriptor reuse. Closed connections may lose replies; retry the stable request rather than assuming a rollback.
+
+### 18.9 Client sequence and unimplemented interfaces
+
+HTTP login→save token→verify sender device→fetch_friends for Bob's real account UUID→friend_devices→fetch bundle/prekey as needed and encrypt locally→WebSocket upgrade→chat.newTextMessage→handle result/error. Refresh/login uses existing HTTP routes; there is no WebSocket refresh route.
+
+Not implemented: chat.envelopes.submit/accepted, chat.envelope.push/ack, chat.envelopes.sync, batches, connection device binding, recipient online registry and cross-Worker delivery. [e2ee-envelope-and-websocket.md](e2ee-envelope-and-websocket.md) describes proposals, not callable interfaces.
+
+Current Worker logs applicationMessage.dump(), including authorization; logs need restricted access and later redaction. This update changes documentation only. Layering details: [new-message-storage-layers.md](new-message-storage-layers.md).

@@ -1,6 +1,6 @@
 # 服务器后端接口文档
 
-更新时间：2026-10-08。
+更新时间：2026-10-12。
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
@@ -810,3 +810,200 @@ $bundleBody = @{ friend_id = $friendId; device_id = $friendDeviceId } | ConvertT
 $bundle = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_device_key_bundle" -Headers @{ authorization = "Bearer $($login.access_token)" } -ContentType "application/json" -Body $bundleBody
 $bundle | ConvertTo-Json -Depth 5
 ```
+
+
+## 18. WebSocket API（当前实现）
+
+本节按当前 HttpSession、WebsocketWorker、WebSocketSession、WebSocketHandler、WebSocketDispatcher、ChatService 和 EnvelopeRepository 整理。它描述当前代码，而非最终规划。当前只支持发送端提交一个目标信封及存储结果回复，不含接收方消息推送、ACK、离线历史拉取或独立认证消息。
+
+### 18.1 地址、握手与身份验证
+
+本地测试地址：`ws://127.0.0.1:8082/websocket-test`。main 当前监听 0.0.0.0:8082。公网应通过已配置的 TLS 代理使用 WSS；本文未验证代理 WebSocket 路由配置。
+
+标准客户端发送升级请求，例如：
+
+```http
+GET /websocket-test HTTP/1.1
+Host: localhost:8082
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+```
+
+示例Key来自固定测试向量，实际客户端应每次生成新的16字节随机值并Base64编码。
+
+```http
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
+
+上面响应只展示关键头，不是完整的响应头集合。握手Accept通过客户端Key与WebSocket固定GUID拼接后SHA-1和Base64得到；它不是消息加密。
+
+当前 HttpSession 检测 Upgrade:websocket 后转交 Worker，未通过 HTTP Router 验证路径、Token或设备。Worker只显式要求精确头名称 `Sec-WebSocket-Key` 非空；没有完整检查请求方法、Connection、Version和Key长度。这些是当前限制，不是推荐的协议规范。不要把 `/websocket-test` 描述成一个已鉴权的专用HTTP路由。
+
+每条业务JSON都需包含 `authorization` 或 `Authorization` 字符串，值为精确前缀 `Bearer ` 加有效Access Token。两种字段同时存在时优先小写字段；它的类型错误不会回退大写字段。握手成功不代表已登录，也没有设备绑定状态保存在连接中。
+
+### 18.2 Frame与JSON编码约定
+
+| 项目 | 当前行为 |
+|---|---|
+| 业务帧 | FIN=1、opcode=Text(0x1)，payload是UTF-8 JSON对象 |
+| 客户端mask | 必须有mask，未mask会作为协议错误处理 |
+| 服务端mask | 不使用mask |
+| RSV位/压缩 | RSV必须为0，未实现permessage-deflate |
+| 单帧payload上限 | 1,048,576字节，包含整份JSON而不只是packet |
+| 长度编码 | 支持7/16/64位长度，拒绝非最短编码及非法64位长度 |
+| 分片 | 不支持FIN=0数据帧或Continuation，不能把一个JSON拆成多个Frame |
+| TCP拆包 | 支持等待不完整Frame；它与WebSocket消息分片不同 |
+| Binary | 可解析，但payload变为字节数组，无法通过当前业务对象检查 |
+| 非JSON Text、数组、标量、null | 返回invalid_payload |
+
+客户端直接发送应用JSON，不要自行套服务器内部的 `header/payload_format/payload` 包装。ApplicationParse只在服务端添加这些字段。未知type或缺少type不属于上表的“非对象”情况，见18.7。
+
+### 18.3 正式存储：chat.newTextMessage
+
+每次只提交一个目标设备。请求示例中的UUID是假定值，须替换为实际设备和客户端生成的消息编号：
+
+```json
+{
+  "type": "chat.newTextMessage",
+  "authorization": "Bearer ACCESS_TOKEN",
+  "sender_device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4",
+  "message_id": "4ffded1c-d415-4adb-a888-703116dc192e",
+  "recipient_device_id": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "protocol_version": "TEST-OPAQUE-v1",
+  "packet_base64": "AQID"
+}
+```
+
+| 字段 | 类型 | 必须 | 规则 |
+|---|---|---|---|
+| type | string | 是 | 精确为chat.newTextMessage，区分大小写 |
+| authorization | string | 是 | Bearer Token，也接受Authorization |
+| sender_device_id | string | 是 | 36字符UUID，不可nil；实际归属由数据库验证 |
+| message_id | string | 是 | 客户端稳定UUID，不可nil；不是数据库生成的envelope_id |
+| recipient_device_id | string | 是 | 36字符UUID，不可nil，不能等于发送设备 |
+| protocol_version | string | 是 | 非空、非纯空白、最多128字节；目前不做算法白名单或包内版本比对 |
+| packet_base64 | string | 是 | 标准Base64，长度为4的倍数，不允许空白，需正确padding；解码后1～65536字节 |
+
+Base64输入最多87,384字符；解码器还检查实际输出上限和完整消费输入。额外字段忽略。目前没有request_id、conversation_id、seq输入或envelopes批量数组；客户端即使传seq，也不会采用它。
+
+AQID是测试字节01 02 03，不是有效加密包。服务器将Base64解码后原样存储BYTEA，不检查棘轮、公钥或认证标签，也不能证明接收端会解密。packet必须由客户端真实协议实现生成，才能进行实际E2EE通信。
+
+### 18.4 保存权限与序号
+
+服务端从Token获得user_id；客户端sender_device_id只是申请使用的设备，不是可信身份。Repository保存事务检查并锁定：发送设备属于该user_id、双方设备active、双方账号active、双方账号不同、两方向好友关系均存在。当前接口不支持同账号设备同步。
+
+设备对排序后获得事务级advisory lock，seq按该设备对的MAX(seq)+1分配；A1→B1与B1→A1共享序列。不同设备对各自从1开始。seq是整数顺序，不是时间、不参与解密、也不是所有会话共用的同步水位。
+
+数据库提交后才给发送端成功回复。没有发送给Bob的push，不需要Bob在线即可存储。部署前必须核对seq、外键和索引，见 [prepare-envelope-message-storage.sql](prepare-envelope-message-storage.sql)。message_id不再引用app.message(id)，否则可能发生23503并映射为internal_server_error。本文只改文档，不执行迁移。
+
+### 18.5 成功、重复和冲突
+
+新信封存储成功：
+
+```json
+{
+  "type": "newTextMessage.result",
+  "success": true,
+  "duplicate": false,
+  "message_id": "4ffded1c-d415-4adb-a888-703116dc192e",
+  "envelope_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  "seq": 1
+}
+```
+
+重复请求成功：
+
+```json
+{
+  "type": "newTextMessage.result",
+  "success": true,
+  "duplicate": true,
+  "message_id": "4ffded1c-d415-4adb-a888-703116dc192e",
+  "envelope_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  "seq": 1
+}
+```
+
+重试键为(sender_device_id, recipient_device_id, message_id)。已保存的protocol_version及解码后的packet完全相同才判为重复；返回原envelope_id/seq，不插入、不递增。不同内容返回envelope_conflict。message_id给不同目标设备属于不同请求范围。
+
+success只表示持久化完成，不代表对方收到、解密或已读。权限先于重试识别，撤销设备/删除好友后重试仍可能被拒绝；拒绝不代表此前未保存。对同一设备对不要删除最高seq记录，否则MAX+1可能重用序号，历史清理需另设计水位。
+
+### 18.6 失败响应：两种实际结构
+
+路由前对象/鉴权错误不含success和message：
+
+```json
+{"type":"error","error":{"code":"missing_authorization"}}
+```
+
+| code | 触发情况 |
+|---|---|
+| invalid_payload | payload不是JSON对象 |
+| missing_authorization | authorization/Authorization缺失或非字符串 |
+| invalid_access_token | 字符串为空、Bearer前缀不符、签名/Token校验失败 |
+| access_token_expired | Token过期 |
+
+正式消息字段或业务错误：
+
+```json
+{
+  "type":"newTextMessage.result",
+  "success":false,
+  "error":{"code":"send_permission_denied","message":"Sender or recipient is not permitted"}
+}
+```
+
+| code | message/含义 |
+|---|---|
+| invalid_request | 字段解析时具体说明；Service校验失败时Invalid message fields |
+| send_permission_denied | Sender or recipient is not permitted；设备、账号或好友权限不满足 |
+| envelope_conflict | Message identifier already exists with different content |
+| database_unavailable | Retry later with the same message identifier and packet |
+| retry_later | Retry later with the same message identifier and packet；有限事务重试耗尽 |
+| server_busy | Service task was not queued；正式消息任务入队失败 |
+| internal_server_error | Missing storage result / Unable to save message / Unable to process message / Unable to parse message等安全描述 |
+
+应用消息没有HTTP状态码。失败一般不带message_id/envelope_id/seq，也没有request_id关联字段；并行发送多个请求时不能假定失败可按UUID直接对应。message仅供展示，客户端逻辑应按code判断。失败不必然表示一定没有写入，尤其COMMIT连接故障；超时也不能证明未保存。
+
+连接/数据库临时故障重试保持原message_id、目标、协议版本及packet；不要重新加密后沿用旧编号。Service对40001、40P01和识别到的主键UUID碰撞最多进行3次整事务尝试；其他数据库错误不直接透露SQLSTATE给客户端。envelope_conflict不能靠无脑换UUID绕过去。
+
+### 18.7 测试路由与当前不完备行为
+
+```json
+{"type":"chat.newTextMessage_Test","authorization":"Bearer ACCESS_TOKEN","id":"test-1","message":"hello"}
+```
+
+```json
+{"type":"newTextMessage.result","success":true,"id":"test-1"}
+```
+
+测试路由仅调用printId，不持久化信封、不分配seq，不验证sender_device_id或好友关系。id/message应为字符串；代码直接转换字段，未提供完整格式错误回复，异常可能只有线程池日志而没有应用响应。
+
+未知type在switch的UnKnown分支直接return，**当前没有unsupported_type回复**。type缺失/非字符串也没有专门检查，可能触发JSON转换异常，由Worker边界记录日志，无可靠应用错误回复。客户端必须发送已知且格式正确的type，不应假定每种非法消息都收到结果。
+
+### 18.8 Ping、Pong、Close与断线
+
+| opcode | 当前处理 |
+|---|---|
+| Ping 0x9 | 立即排队同payload的Pong，不进入业务鉴权 |
+| Pong 0xA | 清除等待Pong状态并记录活动；目前不核对payload对应关系 |
+| Close 0x8 | 排队同payload的Close回复，然后关闭连接 |
+
+控制帧必须FIN=1、payload≤125字节；Close长度为1非法。网络协议错误、无mask、非法RSV、超长或不支持分片会走协议错误关闭路径，不能期待JSON错误报文。
+
+服务端每5秒检查一次心跳。空闲超过30秒且没有等待Pong时发送空payload Ping；发送后等待Pong达到10秒即移除连接。检查粒度会使实际时刻延后。普通消息可以刷新活动时间，但不替代已经等待的Pong确认；客户端应响应真正的WebSocket Ping，不能发送JSON字符串“pong”代替。
+
+回复被投递回原连接Worker，并核对fd和session_id以避免fd重用误投。若连接已关闭，结果可能无法送达；使用稳定消息编号重试，而不是推断未保存。
+
+### 18.9 客户端推荐调用顺序与未实现项
+
+HTTP登录→保存access_token→确认Alice发送设备有效→fetch_friends获取Bob实际id→friend_devices获取目标设备→按需获取bundle/prekey并在客户端加密→WebSocket升级→发送chat.newTextMessage→处理result或error。Token过期后通过现有HTTP刷新/登录取得新Token，下一条报文使用新Token；没有WebSocket refresh路由。
+
+尚未实现：chat.envelopes.submit/accepted、chat.envelope.push、chat.envelope.ack、chat.envelopes.sync、批量信封、连接认证/设备绑定、接收设备在线目录与跨Worker投递。它们在 [e2ee-envelope-and-websocket.md](e2ee-envelope-and-websocket.md) 中只是设计示例，不得当成当前可调用API。
+
+当前Worker会把applicationMessage.dump()打印到日志，包含authorization；联调应限制日志访问，后续需脱敏。本次仅更新文档，没有修改日志或路由代码。分层代码详解见 [new-message-storage-layers.md](new-message-storage-layers.md)。

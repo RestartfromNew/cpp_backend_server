@@ -21,13 +21,8 @@
 class ServiceThreadPool {
 public:
     using Task=std::function<void()>;
-    ChatService chatService;
-    int i=1;
-    std::string input="hello";
-    Task task=[this,id=std::move(input), index=i]()mutable {
-        chatService.printId(id,input);
-    };
-    ServiceThreadPool(int threadCount);
+    ChatService& chatService;
+    ServiceThreadPool(int threadCount, ChatService& chatService);
     void init();
     void receiveTask(Task task);
     void close();

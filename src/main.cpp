@@ -34,6 +34,7 @@
 #include <system_error>
 #include "websocket/WebSocketDispatcher.h"
 #include "service/ServiceThreadPool.h"
+#include "repository/EnvelopeRepository.h"
 namespace {
 // Block before starting ANY background thread. Main consumes signals as data;
 // no mutex, logging, or join is executed inside a signal handler.
@@ -109,6 +110,8 @@ int main()
         AccessTokenService accessTokenService{secret};
         RefreshTokenHandler refreshTokenHandler{refreshTokenService,accessTokenService};
 
+        EnvelopeRepository envelope_repository{databasePool};
+        ChatService chatService{envelope_repository};
         AuthMiddleWare authMiddleWare{accessTokenService};
         LoginService loginService{userRepository,refreshTokenService,accessTokenService};
         KeyRepository keyRepository{databasePool};
@@ -245,13 +248,15 @@ int main()
         );
 
         //启动服务
-        TcpServer server{"0.0.0.0",8081};
+        TcpServer server{"0.0.0.0",8082};
         //TcpServer server{"0.0.0.0",8082};
         server.start();
         ThreadPoolConfig thread_pool_config{4,8};
         WebSocketPoolConfig web_socket_pool_config{4,100};
-        ServiceThreadPool service_thread_pool(2);
-        WebSocketDispatcher web_socket_dispatcher(service_thread_pool);
+        EnvelopeRepository envelopeRepository{databasePool};
+        ChatService chat_service{envelopeRepository};
+        ServiceThreadPool service_thread_pool(2, chat_service);
+        WebSocketDispatcher web_socket_dispatcher(service_thread_pool,authMiddleWare);
         WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher);
         ThreadPool thread_pool(thread_pool_config,server,router,web_socket_pool);
         service_thread_pool.init();

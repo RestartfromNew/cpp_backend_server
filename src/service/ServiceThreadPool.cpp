@@ -5,7 +5,11 @@
 #include "service/ServiceThreadPool.h"
 
 #include <stdexcept>
-ServiceThreadPool::ServiceThreadPool(int threadCount):threadCount(threadCount) {};
+#include <iostream>
+ServiceThreadPool::ServiceThreadPool(int count, ChatService& service)
+    : chatService(service), threadCount(count) {
+    if (count <= 0) throw std::invalid_argument("Thread count must be positive");
+}
 
 void ServiceThreadPool::init() {
     {
@@ -16,7 +20,7 @@ void ServiceThreadPool::init() {
         stop_ = false;
     }
     threads_.reserve(threadCount);
-    for (std::size_t index = 0; index < threadCount; ++index) {
+    for (std::size_t index = 0; index < static_cast<std::size_t>(threadCount); ++index) {
         threads_.emplace_back([this] {
             while (true) {
                 Task task;
@@ -31,7 +35,13 @@ void ServiceThreadPool::init() {
                     tasks_.pop();
                 }
 
-                task();
+                try {
+                    task();
+                } catch (const std::exception&) {
+                    std::cerr << "[ServiceThreadPool] task failed\n";
+                } catch (...) {
+                    std::cerr << "[ServiceThreadPool] unknown task failure\n";
+                }
             }
         });
     }

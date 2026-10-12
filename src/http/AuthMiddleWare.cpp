@@ -29,3 +29,25 @@ AuthResult AuthMiddleWare::authenticate(const HttpRequest &request)const{
     const boost::uuids::uuid authId=std::get<AuthIdentity>(access_token_result).userId;
     return AuthResult{authId};
 }
+AuthResult AuthMiddleWare::authenticate(const std::string& authorization) const {
+    const std::string prefix = "Bearer ";
+
+    if (!authorization.starts_with(prefix) ||
+        authorization.size() == prefix.size()) {
+        return AuthResult{AuthError::UnAuthorized};
+        }
+
+    const std::string accessToken =authorization.substr(prefix.size());
+    const auto tokenResult =accessTokenService_.verify(accessToken);
+    if (std::holds_alternative<AccessTokenError>(tokenResult)) {
+        const auto error = std::get<AccessTokenError>(tokenResult);
+        if (error == AccessTokenError::Expired) {
+            return AuthResult{AuthError::Expired};
+        }
+
+        return AuthResult{AuthError::UnAuthorized};
+    }
+    return AuthResult{
+        std::get<AuthIdentity>(tokenResult).userId
+    };
+}
