@@ -30,13 +30,14 @@ class WebSocketDispatcher;
 class WebSocketPool {
     public:
     using Task=std::function<void()>;
-    WebSocketPool(const WebSocketPoolConfig &config,WebSocketDispatcher &dispatcher);
+    WebSocketPool(const WebSocketPoolConfig &config,WebSocketDispatcher &dispatcher,AuthMiddleWare &auth_middle_ware);
     ~WebSocketPool();
     bool init();
     void close();
     bool forward_connections(PendingWebsocket && request);
 private:
     WebSocketDispatcher &dispatcher_;
+    AuthMiddleWare &auth_middle_ware_;
     std::mutex mutex_;
     WebSocketPoolConfig config_;
     std::vector<std::unique_ptr<WebsocketWorker>> websocket_workers_;

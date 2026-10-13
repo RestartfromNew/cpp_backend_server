@@ -1,10 +1,10 @@
 # Backend API Documentation
 
-Last updated: 2026-10-12.
+Last updated: 2026-10-13.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
-This document describes the HTTP endpoints registered in the current source code, not a planned final design. It is based on main, Router, Handlers, authentication services, Repositories, and HTTP parsing/response code. No live endpoint tests were performed for this documentation. A deployed executable that has not been rebuilt may behave differently from the current source.
+This document describes the HTTP and WebSocket endpoints implemented in the current source code, not a planned final design. It is based on main, Router, Handlers, authentication services, Repositories, and HTTP parsing/response code. No live endpoint tests were performed for this documentation. A deployed executable that has not been rebuilt may behave differently from the current source.
 
 ## 1. Base URLs and General Conventions
 
@@ -35,7 +35,7 @@ authorization: Bearer ACCESS_TOKEN
 X-User-Email: alice@example.com
 ```
 
-The client must calculate Content-Length; do not copy the example value 123. Authentication currently requires lowercase `authorization` and the exact prefix `Bearer `. This is an implementation compatibility defect, not a protocol rule that clients should permanently have to follow. When using Nginx, also check the header names actually forwarded to the backend.
+The client must calculate Content-Length; do not copy the example value 123. Authentication accepts `authorization` or `Authorization` and the exact prefix `Bearer `; arbitrary header-case variants are not yet supported. This is an implementation compatibility defect, not a protocol rule that clients should permanently have to follow. When using Nginx, also check the header names actually forwarded to the backend.
 
 ## 2. Endpoint Overview
 
@@ -345,13 +345,7 @@ Expected: 200, containing a new access_token and the original refresh_token. To 
 
 ### 9.5 Error Cases
 
-```bat
-curl.exe -i -X POST "https://aittelegramapi.uk/verify_access_token" -H "Content-Length: 0"
-curl.exe -i -X POST "https://aittelegramapi.uk/verify_access_token" -H "authorization: Bearer invalid-token" -H "Content-Length: 0"
-curl.exe -i "https://aittelegramapi.uk/login_by_email" -H "Content-Type: application/json" --data-raw "{\"email\":\"api_test01@example.com\",\"password\":\"WrongPass123!\"}"
-curl.exe -i "https://aittelegramapi.uk/register_by_email" -H "Content-Type: application/json" --data-raw "{}"
-curl.exe -i -X GET "https://aittelegramapi.uk/refresh_token" -H "Content-Type: application/json" --data-raw "{\"refreshToken\":\"invalid-token\"}"
-```
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication or bind the connection to a device. X-Device-Id is not an authentication mechanism; business transactions verify device ownership and active state.
 
 Expected in order: 401, 401, 401, 400, 401, assuming requests reach the backend and the database is available.
 
@@ -569,10 +563,7 @@ $processBody = @{
     process = "accepted"
 } | ConvertTo-Json -Compress
 
-Invoke-RestMethod -Method Post `
-    -Uri "http://localhost:8082/process_friendship_request" `
-    -Headers @{ authorization = "Bearer $bobToken" } `
-    -ContentType "application/json" -Body $processBody
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication or bind the connection to a device. X-Device-Id is not an authentication mechanism; business transactions verify device ownership and active state.
 
 # Fetch friends
 Invoke-RestMethod -Method Get `
@@ -672,19 +663,20 @@ This matches the current DeviceKeyBundle model: signed prekey and signature only
 
 ## 18. WebSocket API (current implementation)
 
-This section follows HttpSession, WebsocketWorker, WebSocketSession/Handler/Dispatcher, ChatService and EnvelopeRepository. It documents current code, not proposed interfaces. Only a single-recipient storage request and a test route are implemented. Recipient push, delivery ACKs, history synchronization and standalone connection authentication are not implemented.
+HttpSession forwards Upgrade:websocket to the Worker without HTTP Router path validation. Before101, the Worker authenticates the HTTP Authorization header. Missing/invalid tokens receive HTTP401 with invalid_access_token; expired tokens receive access_token_expired. It sends the JSON error and closes instead of upgrading. Sec-WebSocket-Key lookup is case-insensitive and requires a non-empty value; full method, Connection, Version and key-length validation is not implemented.
 
 ### 18.1 Endpoint, upgrade and authentication
 
-Local example: `ws://127.0.0.1:8082/websocket-test`. main listens on 0.0.0.0:8082. Public deployment should use a configured TLS proxy and WSS; proxy routes have not been verified here.
+Local example: `ws://127.0.0.1:8082/`. main listens on 0.0.0.0:8082. Public deployment should use a configured TLS proxy and WSS; proxy routes have not been verified here.
 
 ```http
-GET /websocket-test HTTP/1.1
+GET / HTTP/1.1
 Host: localhost:8082
 Upgrade: websocket
 Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
+Authorization: Bearer ACCESS_TOKEN
 ```
 
 The sample key is a fixed test vector. Real clients should generate a fresh random 16-byte key and Base64-encode it for each connection. Key response headers:
@@ -698,9 +690,9 @@ Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 
 Accept is SHA-1 of the client key concatenated with the WebSocket GUID, then Base64; this is not message encryption. The example omits other response headers.
 
-Currently HttpSession forwards requests with Upgrade:websocket without HTTP Router path/auth checks. Worker explicitly requires a non-empty, exactly named Sec-WebSocket-Key; full method, Connection, Version and key-length validation is absent. `/websocket-test` is an example path, not an authenticated dedicated HTTP route.
+HttpSession forwards Upgrade:websocket to the Worker without HTTP Router path validation. Before101, the Worker authenticates the HTTP Authorization header. Missing/invalid tokens receive HTTP401 with invalid_access_token; expired tokens receive access_token_expired. It sends the JSON error and closes instead of upgrading. Sec-WebSocket-Key lookup is case-insensitive and requires a non-empty value; full method, Connection, Version and key-length validation is not implemented.
 
-Every application request carries string `authorization` or `Authorization`, containing the exact prefix `Bearer ` and an Access Token. Lowercase takes precedence; invalid lowercase values do not fall back to uppercase. The handshake does not authenticate users or bind a device to the connection.
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication or bind the connection to a device. X-Device-Id is not an authentication mechanism; business transactions verify device ownership and active state.
 
 ### 18.2 Frame and JSON rules
 
@@ -838,6 +830,105 @@ Reply tasks return to the original Worker and validate fd/session_id to prevent 
 
 HTTP login→save token→verify sender device→fetch_friends for Bob's real account UUID→friend_devices→fetch bundle/prekey as needed and encrypt locally→WebSocket upgrade→chat.newTextMessage→handle result/error. Refresh/login uses existing HTTP routes; there is no WebSocket refresh route.
 
-Not implemented: chat.envelopes.submit/accepted, chat.envelope.push/ack, chat.envelopes.sync, batches, connection device binding, recipient online registry and cross-Worker delivery. [e2ee-envelope-and-websocket.md](e2ee-envelope-and-websocket.md) describes proposals, not callable interfaces.
+Receiving flow: HTTP login → authenticated upgrade → chat.sync.envelope → durably save envelopes and per-sender cursors → chat.envelopes.ack → compare acknowledged_ids → repeat with all updated cursors while has_more=true. Previously unknown senders need no initial cursor entry.
 
-Current Worker logs applicationMessage.dump(), including authorization; logs need restricted access and later redaction. This update changes documentation only. Layering details: [new-message-storage-layers.md](new-message-storage-layers.md).
+Not implemented: recipient push, batch submission, connection device binding, recipient online registry and cross-Worker delivery. Proposed message types in design documents are not aliases for implemented routes. Worker application logs still include authorization; this documentation update does not redact logs.
+
+### 18.10 Paginated synchronization: chat.sync.envelope
+
+Request:
+
+```json
+{
+  "type": "chat.sync.envelope",
+  "authorization": "Bearer ACCESS_TOKEN",
+  "device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+  "cursors": [
+    {"peer_device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4", "after_seq": 12}
+  ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| device_id | Non-nil UUID string of the authenticated user's active receiving device |
+| cursors | Required array; [] for initial synchronization; at most1000 entries |
+| peer_device_id | Non-nil sender device UUID, unique within the request and different from device_id |
+| after_seq | JSON integer from0 to9223372036854775807; no strings, fractions or negatives |
+
+Returns only envelopes addressed to device_id with seq greater than that sender's after_seq. Missing senders default to0, allowing discovery of first-time senders; explicit0 also fetches all stored incoming envelopes for that sender. The transaction validates device ownership, active device and active account. No current friendship check is required for previously accepted messages.
+
+Success:
+
+```json
+{
+  "type": "chat.sync.envelope.result",
+  "success": true,
+  "device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+  "count": 1,
+  "has_more": false,
+  "envelopes": [
+    {
+      "envelope_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "message_id": "4ffded1c-d415-4adb-a888-703116dc192e",
+      "sender_device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4",
+      "recipient_device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+      "protocol_version": "TEST-OPAQUE-v1",
+      "packet_base64": "AQID",
+      "seq": 13
+    }
+  ]
+}
+```
+
+count equals envelopes.length. No matches is success=true, count=0, envelopes=[], has_more=false. A page contains at most100 envelopes and has an estimated Base64 JSON budget of512KiB; there is no client limit parameter. Ordering is sender_device_id, seq, envelope_id, not a global chronological timeline. packet_base64 is standard Base64 of the complete protocol packet; AQID is test bytes. Timestamps are not currently returned.
+
+After saving a page, advance each sender's cursor to the largest saved incoming seq, retain other cursors, and request another page if has_more=true. Both directions share a device-pair sequence, so incoming sequences can have gaps. Never advance incoming cursors using outgoing storage receipts. has_more=false describes this query, not future arrivals.
+
+Synchronization neither sets nor filters by received_at. Repeating cursors may return already acknowledged envelopes; deduplicate by envelope_id. Persist envelopes and cursors reliably, and recover pending ACKs after a crash. ACK success does not advance a server synchronization cursor.
+
+### 18.11 Batch receipt acknowledgment: chat.envelopes.ack
+
+Send after durable local storage. Receipt is neither successful decryption nor a read receipt.
+
+```json
+{
+  "type": "chat.envelopes.ack",
+  "authorization": "Bearer ACCESS_TOKEN",
+  "device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+  "envelope_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+}
+```
+```json
+{
+  "type": "chat.envelopes.ack.result",
+  "success": true,
+  "device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+  "count": 1,
+  "acknowledged_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+}
+```
+
+envelope_ids is required:1–100 unique non-nil UUID strings. In one transaction, validate active device ownership and active account, then update only envelopes addressed to that device. received_at uses server CURRENT_TIMESTAMP and COALESCE preserves the first timestamp. Success is sent after commit. Repeated ACKs return matching IDs; decrypted_at is unchanged. No current friendship check is required.
+
+Unknown/foreign IDs are omitted, and count may be zero. Partial matches still return success=true. acknowledged_ids order is unspecified; compare sets before considering every requested envelope acknowledged. Retry failures or uncertain results with the same IDs.
+
+### 18.12 Synchronization and acknowledgment errors
+
+```json
+{"type":"chat.envelopes.ack.result","success":false,"error":{"code":"ack_permission_denied","message":"Device must belong to the authenticated user and be active"}}
+```
+
+Synchronization failures use chat.sync.envelope.result; acknowledgment failures use chat.envelopes.ack.result. Both include success=false and error.code/message. Authentication before routing uses the common type=error structure in18.6.
+
+| Code | Meaning |
+|---|---|
+| invalid_request | Both: missing/invalid fields, ranges or duplicate IDs |
+| sync_permission_denied | Sync: device ownership/active state or account check failed |
+| ack_permission_denied | ACK: same device/account restrictions |
+| database_unavailable | Both: database connection unavailable; retry the same request |
+| retry_later | Both: serialization conflict/deadlock; retry original cursors/IDs |
+| internal_server_error | Both: other storage/processing failure |
+| server_busy | Both: task could not be queued |
+
+Neither route has request_id. Execute synchronization and ACK requests sequentially on a connection so errors can be correlated.

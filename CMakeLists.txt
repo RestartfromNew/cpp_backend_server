@@ -94,6 +94,8 @@ add_executable(cpp_backend_server src/main.cpp
         include/service/KeyService.h
         src/handler/ChatHandler.cpp
         include/handler/ChatHandler.h
+        include/domain/Envelope.h
+        include/domain/SyncEnvelopeRequest.h
 )
 target_include_directories(
         cpp_backend_server

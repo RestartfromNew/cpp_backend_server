@@ -67,7 +67,7 @@ std::string makeWebSocketAccept(std::string_view clientKey) {
 
 }
 
-WebsocketWorker::WebsocketWorker(WebSocketDispatcher &dispatcher):dispatcher_(dispatcher) {
+WebsocketWorker::WebsocketWorker(WebSocketDispatcher &dispatcher,AuthMiddleWare &auth_middle_ware):dispatcher_(dispatcher),auth_middle_ware_(auth_middle_ware) {
     //初始化
     epoll_fd_= ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == -1)
@@ -343,14 +343,49 @@ void WebsocketWorker::handleTask() {
 }
 void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
     const HttpRequest& request=session.request;
+    auto authResult=auth_middle_ware_.authenticate(request);
     HttpResponse response;
-    const auto keyIt = request.headers.find("Sec-WebSocket-Key");
+    if (std::holds_alternative<AuthError>(authResult.result)) {
+        //需要验证accesstoken
+        const auto error = std::get<AuthError>(authResult.result);
+        response = ErrorResponseMaker(
+            HttpStatus::Unauthorized,
+            error == AuthError::Expired? "access_token_expired": "invalid_access_token",
+            error == AuthError::Expired? "Access token has expired": "Invalid or missing access token"
+        );
+
+        response.headers["Content-Type"] = "application/json";
+        response.headers["Connection"] = "close";
+        session.connection.sendAll(response_generator_.generateHttpResponse(response));
+        return; // 不继续返回101，也不注册WebSocket会话
+    }
+    // for (const auto& [name, value] : request.headers) {
+    //     (void)value;
+    //     std::cerr << "[handshake] header name: " << name << '\n';
+    // }
+
+    const auto keyIt = std::find_if(
+    request.headers.begin(),
+    request.headers.end(),
+    [](const auto& entry) {
+        constexpr std::string_view expected = "Sec-WebSocket-Key";
+        const auto& name = entry.first;
+
+        return name.size() == expected.size() &&
+            std::equal(
+                name.begin(), name.end(),
+                expected.begin(),
+                [](unsigned char left, unsigned char right) {
+                    return std::tolower(left) == std::tolower(right);
+                }
+            );
+    }
+);
 
     if (keyIt == request.headers.end() || keyIt->second.empty()) {
-        throw std::runtime_error(
-            "Missing Sec-WebSocket-Key header"
-        );
+        throw std::runtime_error("Missing Sec-WebSocket-Key header");
     }
+
     const std::string acceptValue =makeWebSocketAccept(keyIt->second);
     response.status=HttpStatus::Switching_Protocol;
     response.headers["Upgrade"]="websocket";

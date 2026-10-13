@@ -55,3 +55,14 @@ NewTextMessageResult ChatService::newTextMessage(const boost::uuids::uuid& user_
     }
     return {NewTextMessageStatus::RetryLater};
 }
+std::optional<EnvelopePage> ChatService::syncEnvelopePage(
+    const boost::uuids::uuid& user_id, const SyncEnvelopeRequest& request) {
+    // nullopt means permission denied; an empty page is successful synchronization.
+    // Database exceptions remain available to the existing Task error boundary.
+    return envelope_repository_.syncEnvelopeRecord(user_id, request);
+}
+
+std::optional<std::vector<boost::uuids::uuid>> ChatService::ackEnvelopes(
+    const boost::uuids::uuid& user_id, const AckEnvelopeRequest& request) {
+    return envelope_repository_.ackEnvelopes(user_id, request);
+}

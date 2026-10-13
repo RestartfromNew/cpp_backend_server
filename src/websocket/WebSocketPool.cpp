@@ -6,7 +6,7 @@
 
 #include <stdexcept>
 
-WebSocketPool::WebSocketPool(const WebSocketPoolConfig &config,WebSocketDispatcher &dispatcher):dispatcher_(dispatcher),config_(config) {
+WebSocketPool::WebSocketPool(const WebSocketPoolConfig &config,WebSocketDispatcher &dispatcher,AuthMiddleWare &auth_middle_ware):dispatcher_(dispatcher),config_(config),auth_middle_ware_(auth_middle_ware) {
 
 }
 WebSocketPool::~WebSocketPool() {
@@ -25,7 +25,7 @@ bool WebSocketPool::init() {
         const size_t workerCount =static_cast<std::size_t>(config_.min_capacity);
         workers.reserve(workerCount);
         for (std::size_t i = 0;i < workerCount;++i) {
-            workers.push_back(std::make_unique<WebsocketWorker>(dispatcher_));
+            workers.push_back(std::make_unique<WebsocketWorker>(dispatcher_,auth_middle_ware_));
         }
     }
     catch (...) {

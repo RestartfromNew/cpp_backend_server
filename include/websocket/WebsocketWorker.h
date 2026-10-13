@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -21,6 +23,8 @@
 #include "websocket/WebSocketSession.h"
 #include "http/HttpResponseGenerator.h"
 #include <sys/timerfd.h>
+
+#include "http/AuthMiddleWare.h"
 #include "http/HttpRequest.h"
 #include "websocket/WebSocketHandler.h"
 
@@ -33,7 +37,7 @@ struct PendingWebsocket {
 class WebsocketWorker {
 public:
     using Task=std::function<void()>;
-    WebsocketWorker(WebSocketDispatcher &dispatcher);
+    WebsocketWorker(WebSocketDispatcher &dispatcher,AuthMiddleWare &auth_middle_ware);
     ~WebsocketWorker();
     void transferSession(PendingWebsocket session);
     void transferTask(Task task);
@@ -70,6 +74,7 @@ private:
     void handleWritable(int fd);
     void setWriteInterest(int fd, bool enabled);
     void handleTimer();
+    AuthMiddleWare &auth_middle_ware_;
 
 
 

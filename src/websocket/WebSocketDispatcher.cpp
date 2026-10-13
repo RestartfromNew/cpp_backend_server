@@ -8,9 +8,29 @@
 #include <boost/uuid/string_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <stdexcept>
+#include "databases/DatabaseError.h"
+#include <limits>
+#include <set>
 
 #include "service/ServiceThreadPool.h"
 namespace {
+
+std::string encodePacketBase64(const std::vector<std::uint8_t>& bytes) {
+    constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string encoded;
+    encoded.reserve(4 * ((bytes.size() + 2) / 3));
+    for (std::size_t i = 0; i < bytes.size(); i += 3) {
+        const auto remaining = bytes.size() - i;
+        const std::uint32_t value = (static_cast<std::uint32_t>(bytes[i]) << 16U) |
+            (remaining > 1 ? static_cast<std::uint32_t>(bytes[i + 1]) << 8U : 0U) |
+            (remaining > 2 ? bytes[i + 2] : 0U);
+        encoded.push_back(alphabet[(value >> 18U) & 63U]);
+        encoded.push_back(alphabet[(value >> 12U) & 63U]);
+        encoded.push_back(remaining > 1 ? alphabet[(value >> 6U) & 63U] : '=');
+        encoded.push_back(remaining > 2 ? alphabet[value & 63U] : '=');
+    }
+    return encoded;
+}
 
 const std::string& requireString(
     const nlohmann::json& body,
@@ -99,6 +119,8 @@ enum class WebsocketRouter {
     //发一条新消息
     NewTextMessageTest,
     NewTextMessage,
+    SyncEnvelope,
+    AckEnvelope,
     UnKnown
 
 };
@@ -107,6 +129,10 @@ WebsocketRouter parseType(const std::string& type) {
         return WebsocketRouter::NewTextMessageTest;
     if (type == "chat.newTextMessage")
         return WebsocketRouter::NewTextMessage;
+    if (type=="chat.sync.envelope")
+        return WebsocketRouter::SyncEnvelope;
+    if (type == "chat.envelopes.ack")
+        return WebsocketRouter::AckEnvelope;
     return WebsocketRouter::UnKnown;
 }
 WebSocketDispatcher::WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare):threadPool_(threadPool),AuthMiddleWare_(AuthMiddleWare) {};
@@ -245,6 +271,115 @@ void WebSocketDispatcher::dispatch(nlohmann::json frame,Reply reply) {
             }
             return;
         }
+        case WebsocketRouter::SyncEnvelope: {
+            Task task=[this,payload=std::move(payload),header=std::move(header),userId,reply]()mutable {
+                const auto parsed = parseSyncEnvelope(payload, reply);
+                if (!parsed) {
+                    return; // 私有解析函数已经回复格式错误。
+                }
+                nlohmann::json response{
+                    {"type", "chat.sync.envelope.result"},
+                    {"success", false}
+                };
+                const auto setError = [&](const char* code, const char* message) {
+                    response["error"] = {{"code", code}, {"message", message}};
+                };
+                try {
+                    const auto page = threadPool_.chatService.syncEnvelopePage(userId, *parsed);
+                    if (!page) {
+                        setError("sync_permission_denied", "Device must belong to the authenticated user and be active");
+                    } else {
+                        auto envelopes = nlohmann::json::array();
+                        for (const auto& envelope : page->envelopes) {
+                            envelopes.push_back({
+                                {"envelope_id", boost::uuids::to_string(envelope.envelope_id)},
+                                {"message_id", boost::uuids::to_string(envelope.message_id)},
+                                {"sender_device_id", boost::uuids::to_string(envelope.sender_device_id)},
+                                {"recipient_device_id", boost::uuids::to_string(envelope.recipient_device_id)},
+                                {"protocol_version", envelope.protocol_version},
+                                {"packet_base64", encodePacketBase64(envelope.packet)},
+                                {"seq", envelope.seq}
+                            });
+                        }
+                        response["success"] = true;
+                        response["device_id"] = boost::uuids::to_string(parsed->device_id);
+                        response["count"] = page->envelopes.size();
+                        response["has_more"] = page->has_more;
+                        response["envelopes"] = std::move(envelopes);
+                    }
+                } catch (const std::invalid_argument&) {
+                    setError("invalid_request", "Invalid synchronization request");
+                } catch (const DatabaseError& error) {
+                    if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08")) {
+                        setError("database_unavailable", "Service temporarily unavailable");
+                    } else if (error.code() == "40001" || error.code() == "40P01") {
+                        setError("retry_later", "Retry synchronization with the same cursors");
+                    } else {
+                        setError("internal_server_error", "Unable to synchronize envelopes");
+                    }
+                } catch (const std::exception&) {
+                    response = {
+                        {"type", "chat.sync.envelope.result"}, {"success", false},
+                        {"error", {{"code", "internal_server_error"},
+                                   {"message", "Unable to synchronize envelopes"}}}
+                    };
+                }
+                reply(std::move(response));
+            };
+            try {
+
+                threadPool_.receiveTask(std::move(task));
+            } catch (const std::exception&) {
+                reply(nlohmann::json{
+                    {"type", "chat.sync.envelope.result"}, {"success", false},
+                    {"error", {{"code", "server_busy"},
+                               {"message", "Service task was not queued"}}}
+                });
+            }
+            return;
+        }
+        case WebsocketRouter::AckEnvelope: {
+            Task task=[this,payload=std::move(payload),userId,reply]()mutable {
+                const auto parsed = parseAckEnvelope(payload, reply);
+                if (!parsed) return;
+                nlohmann::json response{{"type", "chat.envelopes.ack.result"}, {"success", false}};
+                const auto setError = [&](const char* code, const char* message) {
+                    response["error"] = {{"code", code}, {"message", message}};
+                };
+                try {
+                    const auto result = threadPool_.chatService.ackEnvelopes(userId, *parsed);
+                    if (!result) {
+                        setError("ack_permission_denied", "Device must belong to the authenticated user and be active");
+                    } else {
+                        auto ids = nlohmann::json::array();
+                        for (const auto& id : *result) ids.push_back(boost::uuids::to_string(id));
+                        response["device_id"] = boost::uuids::to_string(parsed->device_id);
+                        response["acknowledged_ids"] = std::move(ids);
+                        response["count"] = result->size();
+                        response["success"] = true;
+                    }
+                } catch (const std::invalid_argument&) {
+                    setError("invalid_request", "Invalid acknowledgment request");
+                } catch (const DatabaseError& error) {
+                    if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08"))
+                        setError("database_unavailable", "Retry acknowledgment with the same identifiers");
+                    else if (error.code() == "40001" || error.code() == "40P01")
+                        setError("retry_later", "Retry acknowledgment with the same identifiers");
+                    else setError("internal_server_error", "Unable to acknowledge envelopes");
+                } catch (const std::exception&) {
+                    response = {{"type", "chat.envelopes.ack.result"}, {"success", false},
+                        {"error", {{"code", "internal_server_error"}, {"message", "Unable to acknowledge envelopes"}}}};
+                }
+                reply(std::move(response));
+            };
+            try {
+                threadPool_.receiveTask(std::move(task));
+            } catch (const std::exception&) {
+                reply(nlohmann::json{{"type", "chat.envelopes.ack.result"}, {"success", false},
+                    {"error", {{"code", "server_busy"}, {"message", "Service task was not queued"}}}});
+            }
+            return;
+        }
         case WebsocketRouter::UnKnown: {
             // 未知类型不进入业务路由。
             return;
@@ -301,5 +436,102 @@ std::optional<ParsedNewMessage>WebSocketDispatcher::parseNewMessage(const nlohma
         });
     }
 
+    return std::nullopt;
+}
+
+std::optional<SyncEnvelopeRequest> WebSocketDispatcher::parseSyncEnvelope(
+    const nlohmann::json& payload, const Reply& reply) const {
+    try {
+        if (!payload.is_object()) {
+            throw std::invalid_argument("Payload must be a JSON object");
+        }
+        SyncEnvelopeRequest parsed;
+        parsed.device_id = requireUuid(payload, "device_id");
+        if (parsed.device_id.is_nil()) {
+            throw std::invalid_argument("device_id must not be a nil UUID");
+        }
+        const auto cursors = payload.find("cursors");
+        if (cursors == payload.end() || !cursors->is_array()) {
+            throw std::invalid_argument("cursors must be an array; use [] for first synchronization");
+        }
+        if (cursors->size() > 1000) {
+            throw std::invalid_argument("cursors must contain at most 1000 entries");
+        }
+        parsed.cursors.reserve(cursors->size());
+        std::set<std::string> seenDevices;
+        for (const auto& entry : *cursors) {
+            if (!entry.is_object()) {
+                throw std::invalid_argument("Each cursor must be an object");
+            }
+            const auto peerId = requireUuid(entry, "peer_device_id");
+            if (peerId.is_nil() || peerId == parsed.device_id) {
+                throw std::invalid_argument("peer_device_id must be non-nil and different from device_id");
+            }
+            if (!seenDevices.insert(boost::uuids::to_string(peerId)).second) {
+                throw std::invalid_argument("peer_device_id must be unique within cursors");
+            }
+            const auto seq = entry.find("after_seq");
+            if (seq == entry.end() || !seq->is_number_integer()) {
+                throw std::invalid_argument("after_seq must be a non-negative BIGINT integer");
+            }
+            std::int64_t afterSeq;
+            if (seq->is_number_unsigned()) {
+                const auto value = seq->get<std::uint64_t>();
+                if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                    throw std::invalid_argument("after_seq exceeds BIGINT range");
+                }
+                afterSeq = static_cast<std::int64_t>(value);
+            } else {
+                afterSeq = seq->get<std::int64_t>();
+                if (afterSeq < 0) {
+                    throw std::invalid_argument("after_seq must not be negative");
+                }
+            }
+            parsed.cursors.push_back(EnvelopeSyncCursor{
+                .peer_device_id = peerId,
+                .after_seq = afterSeq
+            });
+        }
+        return parsed;
+    } catch (const std::invalid_argument& error) {
+        reply(nlohmann::json{
+            {"type", "chat.sync.envelope.result"}, {"success", false},
+            {"error", {{"code", "invalid_request"}, {"message", error.what()}}}
+        });
+    } catch (const std::exception&) {
+        reply(nlohmann::json{
+            {"type", "chat.sync.envelope.result"}, {"success", false},
+            {"error", {{"code", "internal_server_error"},
+                       {"message", "Unable to parse synchronization request"}}}
+        });
+    }
+    return std::nullopt;
+}
+
+std::optional<AckEnvelopeRequest> WebSocketDispatcher::parseAckEnvelope(
+    const nlohmann::json& payload, const Reply& reply) const {
+    try {
+        if (!payload.is_object()) throw std::invalid_argument("Payload must be a JSON object");
+        AckEnvelopeRequest parsed;
+        parsed.device_id = requireUuid(payload, "device_id");
+        if (parsed.device_id.is_nil()) throw std::invalid_argument("device_id must not be nil");
+        const auto ids = payload.find("envelope_ids");
+        if (ids == payload.end() || !ids->is_array() || ids->empty() || ids->size() > 100)
+            throw std::invalid_argument("envelope_ids must be an array of 1 to 100 UUIDs");
+        std::set<std::string> seen;
+        for (const auto& value : *ids) {
+            const auto id = requireUuid(nlohmann::json{{"envelope_id", value}}, "envelope_id");
+            if (id.is_nil() || !seen.insert(boost::uuids::to_string(id)).second)
+                throw std::invalid_argument("envelope_ids must contain unique non-nil UUIDs");
+            parsed.envelope_ids.push_back(id);
+        }
+        return parsed;
+    } catch (const std::invalid_argument& error) {
+        reply(nlohmann::json{{"type", "chat.envelopes.ack.result"}, {"success", false},
+            {"error", {{"code", "invalid_request"}, {"message", error.what()}}}});
+    } catch (const std::exception&) {
+        reply(nlohmann::json{{"type", "chat.envelopes.ack.result"}, {"success", false},
+            {"error", {{"code", "internal_server_error"}, {"message", "Unable to parse acknowledgment request"}}}});
+    }
     return std::nullopt;
 }

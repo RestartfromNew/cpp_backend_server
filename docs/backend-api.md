@@ -1,10 +1,10 @@
 # 服务器后端接口文档
 
-更新时间：2026-10-12。
+更新时间：2026-10-13。
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
-本文描述当前源代码已经注册的 HTTP 接口，而不是计划中的最终设计。根据 `main`、Router、Handler、认证服务、Repository 和 HTTP 解析/响应实现整理；本次未对运行中的服务进行接口实测。部署的可执行文件若未重新编译，行为可能与当前源码不同。
+本文描述当前源代码已经实现的 HTTP 与 WebSocket 接口，而不是计划中的最终设计。根据 `main`、Router、Handler、认证服务、Repository 和 HTTP 解析/响应实现整理；本次未对运行中的服务进行接口实测。部署的可执行文件若未重新编译，行为可能与当前源码不同。
 
 ## 1. 访问地址与通用约定
 
@@ -35,7 +35,7 @@ authorization: Bearer ACCESS_TOKEN
 X-User-Email: alice@example.com
 ```
 
-其中 `Content-Length` 的值由客户端计算，不要复制示例中的 123。认证头当前需要小写 `authorization`，并使用精确前缀 `Bearer `。这是当前实现的兼容性缺陷，不是对客户端应长期施加的协议规则；经过 Nginx 时还需确认转发后的头名称。
+其中 `Content-Length` 的值由客户端计算，不要复制示例中的 123。认证头当前接受 `authorization` 或 `Authorization`，并使用精确前缀 `Bearer `；其他大小写组合尚未统一支持。这是当前实现的兼容性缺陷，不是对客户端应长期施加的协议规则；经过 Nginx 时还需确认转发后的头名称。
 
 ## 2. 接口总览
 
@@ -814,21 +814,22 @@ $bundle | ConvertTo-Json -Depth 5
 
 ## 18. WebSocket API（当前实现）
 
-本节按当前 HttpSession、WebsocketWorker、WebSocketSession、WebSocketHandler、WebSocketDispatcher、ChatService 和 EnvelopeRepository 整理。它描述当前代码，而非最终规划。当前只支持发送端提交一个目标信封及存储结果回复，不含接收方消息推送、ACK、离线历史拉取或独立认证消息。
+本节按当前 HttpSession、WebsocketWorker、WebSocketSession、WebSocketHandler、WebSocketDispatcher、ChatService 和 EnvelopeRepository 整理。它描述当前代码，而非最终规划。当前支持单目标信封存储、按设备游标分页同步、批量接收确认，以及握手和业务报文 Token 验证。接收方实时推送尚未实现。
 
 ### 18.1 地址、握手与身份验证
 
-本地测试地址：`ws://127.0.0.1:8082/websocket-test`。main 当前监听 0.0.0.0:8082。公网应通过已配置的 TLS 代理使用 WSS；本文未验证代理 WebSocket 路由配置。
+本地测试地址：`ws://127.0.0.1:8082/`。main 当前监听 0.0.0.0:8082。公网应通过已配置的 TLS 代理使用 WSS；本文未验证代理 WebSocket 路由配置。
 
 标准客户端发送升级请求，例如：
 
 ```http
-GET /websocket-test HTTP/1.1
+GET / HTTP/1.1
 Host: localhost:8082
 Upgrade: websocket
 Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
+Authorization: Bearer ACCESS_TOKEN
 ```
 
 示例Key来自固定测试向量，实际客户端应每次生成新的16字节随机值并Base64编码。
@@ -842,9 +843,9 @@ Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 
 上面响应只展示关键头，不是完整的响应头集合。握手Accept通过客户端Key与WebSocket固定GUID拼接后SHA-1和Base64得到；它不是消息加密。
 
-当前 HttpSession 检测 Upgrade:websocket 后转交 Worker，未通过 HTTP Router 验证路径、Token或设备。Worker只显式要求精确头名称 `Sec-WebSocket-Key` 非空；没有完整检查请求方法、Connection、Version和Key长度。这些是当前限制，不是推荐的协议规范。不要把 `/websocket-test` 描述成一个已鉴权的专用HTTP路由。
+HttpSession 检测 Upgrade:websocket 后转交 Worker，不通过 HTTP Router 验证路径。Worker 在返回101之前验证请求头中的 Access Token；缺失或无效返回 HTTP401，JSON错误码为 invalid_access_token，过期为 access_token_expired，并关闭连接。Sec-WebSocket-Key 按头名称大小写不敏感查找且必须非空；当前没有完整检查方法、Connection、Version和Key长度。
 
-每条业务JSON都需包含 `authorization` 或 `Authorization` 字符串，值为精确前缀 `Bearer ` 加有效Access Token。两种字段同时存在时优先小写字段；它的类型错误不会回退大写字段。握手成功不代表已登录，也没有设备绑定状态保存在连接中。
+每条业务JSON仍需包含 authorization 或 Authorization 字符串，值为精确前缀 Bearer 加一个空格及有效Token。两者同时存在优先小写字段；类型错误不会回退大写字段。握手验证不替代报文验证，连接尚未绑定设备；X-Device-Id 不是当前设备认证依据。设备归属和有效状态在业务事务中验证。
 
 ### 18.2 Frame与JSON编码约定
 
@@ -1004,6 +1005,107 @@ success只表示持久化完成，不代表对方收到、解密或已读。权�
 
 HTTP登录→保存access_token→确认Alice发送设备有效→fetch_friends获取Bob实际id→friend_devices获取目标设备→按需获取bundle/prekey并在客户端加密→WebSocket升级→发送chat.newTextMessage→处理result或error。Token过期后通过现有HTTP刷新/登录取得新Token，下一条报文使用新Token；没有WebSocket refresh路由。
 
-尚未实现：chat.envelopes.submit/accepted、chat.envelope.push、chat.envelope.ack、chat.envelopes.sync、批量信封、连接认证/设备绑定、接收设备在线目录与跨Worker投递。它们在 [e2ee-envelope-and-websocket.md](e2ee-envelope-and-websocket.md) 中只是设计示例，不得当成当前可调用API。
+接收流程：HTTP登录→带Token握手→发送 chat.sync.envelope→持久化保存信封及对应设备游标→发送 chat.envelopes.ack→核对 acknowledged_ids→has_more=true 时携带更新后的全部游标继续同步。未知发送设备不必预先加入 cursors。
 
-当前Worker会把applicationMessage.dump()打印到日志，包含authorization；联调应限制日志访问，后续需脱敏。本次仅更新文档，没有修改日志或路由代码。分层代码详解见 [new-message-storage-layers.md](new-message-storage-layers.md)。
+尚未实现：接收方实时推送、批量提交信封、连接设备绑定、接收设备在线目录与跨Worker投递。设计文档中的其他示例类型不是当前路由的别名。
+
+当前Worker仍会打印包含authorization的应用报文；日志脱敏不属于本次文档更新。
+
+### 18.10 分页同步信封：chat.sync.envelope
+
+请求：
+
+```json
+{
+  "type": "chat.sync.envelope",
+  "authorization": "Bearer ACCESS_TOKEN",
+  "device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+  "cursors": [
+    {"peer_device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4", "after_seq": 12}
+  ]
+}
+```
+
+| 字段 | 规则 |
+|---|---|
+| device_id | 当前用户的有效接收设备，非零UUID字符串 |
+| cursors | 必填数组，首次同步传[]，最多1000项 |
+| peer_device_id | 发送方设备非零UUID，同一请求不能重复，不能等于device_id |
+| after_seq | 0到9223372036854775807的JSON整数；不接受字符串、浮点数或负数 |
+
+服务端只返回 recipient_device_id=device_id 且 seq 大于该发送设备 after_seq 的信封。未提供的发送设备默认 after_seq=0，因此可发现第一次发消息的设备；显式0也会拉取该设备全部已存信封。同步验证账号有效、设备active且属于认证用户，不再次要求当前好友关系，避免删除好友后无法同步已接受的消息。
+
+成功响应：
+
+```json
+{
+  "type": "chat.sync.envelope.result",
+  "success": true,
+  "device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+  "count": 1,
+  "has_more": false,
+  "envelopes": [
+    {
+      "envelope_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "message_id": "4ffded1c-d415-4adb-a888-703116dc192e",
+      "sender_device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4",
+      "recipient_device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+      "protocol_version": "TEST-OPAQUE-v1",
+      "packet_base64": "AQID",
+      "seq": 13
+    }
+  ]
+}
+```
+
+count等于本页envelopes数量；无消息也是success=true、count=0、envelopes=[]、has_more=false。固定最多100条，并按估算的Base64 JSON大小约512KiB限制页大小，不能指定limit。按sender_device_id、seq、envelope_id排序，不是跨用户时间线。packet_base64为完整协议包的标准Base64，示例AQID仅为测试字节。当前不返回created_at、received_at或decrypted_at。
+
+has_more=true时，保存本页后，对每个发送设备将游标推进到本页已保存的最大seq，保留其他设备游标，再请求下一页。seq在双向设备对中共享，所以接收序号可以有空洞；不要用自己发送成功的seq推进接收游标。has_more=false表示本次查询没有更多匹配消息，不代表以后没有新消息。
+
+同步不自动设置received_at，也不按received_at筛选；同一组游标可重复返回已确认的信封，客户端以envelope_id去重。客户端应将信封及游标可靠持久化，崩溃后恢复未完成的ACK；ACK成功不会推进服务器同步游标。
+
+### 18.11 批量接收确认：chat.envelopes.ack
+
+客户端持久化保存后发送；确认收到不等于解密成功或已读。
+
+```json
+{
+  "type": "chat.envelopes.ack",
+  "authorization": "Bearer ACCESS_TOKEN",
+  "device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+  "envelope_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+}
+```
+```json
+{
+  "type": "chat.envelopes.ack.result",
+  "success": true,
+  "device_id": "947b5e0c-4a11-56d9-8eb0-d16f22edfe24",
+  "count": 1,
+  "acknowledged_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+}
+```
+
+envelope_ids必填，每次1–100个不重复的非零UUID字符串。事务验证设备属于认证用户、设备active且账号有效，然后只更新发给该设备的信封。received_at使用服务端CURRENT_TIMESTAMP；COALESCE保留首次时间。事务提交后才回复成功，重复确认仍返回匹配ID，不修改decrypted_at。
+
+不存在或属于其他设备的ID不会更新，也不会返回；count可能为0，部分匹配仍success=true。acknowledged_ids顺序不保证与请求一致，客户端按集合核对，不能只看success。数据库故障或结果不确定时用相同ID重试。历史确认不再要求好友关系。
+
+### 18.12 同步与确认错误
+
+```json
+{"type":"chat.envelopes.ack.result","success":false,"error":{"code":"ack_permission_denied","message":"Device must belong to the authenticated user and be active"}}
+```
+
+同步失败type为chat.sync.envelope.result，确认失败type为chat.envelopes.ack.result；均含success=false及error.code/message。路由前鉴权错误仍使用18.6中的type=error结构。
+
+| code | 适用及含义 |
+|---|---|
+| invalid_request | 两接口：字段缺失、类型、范围或重复ID不合法 |
+| sync_permission_denied | 同步：设备不属于用户、设备非active或账号无效 |
+| ack_permission_denied | 确认：同上 |
+| database_unavailable | 两接口：数据库连接不可用；稍后重试同一请求 |
+| retry_later | 两接口：事务冲突或死锁；重试原游标/确认ID |
+| internal_server_error | 两接口：其他存储或处理异常 |
+| server_busy | 两接口：任务未能入队 |
+
+两个接口没有request_id，建议同一连接按请求—响应顺序执行同步及确认，避免同时请求时无法关联错误。
