@@ -398,7 +398,7 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
     request.headers.begin(),
     request.headers.end(),
     [](const auto& entry) {
-        constexpr std::string_view expected = "device_id";
+        constexpr std::string_view expected = "deviceID";
         const auto& name = entry.first;
 
         return name.size() == expected.size() &&
