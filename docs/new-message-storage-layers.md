@@ -31,7 +31,7 @@ A1→B2，message_id=M1 → 另一设备对自己的seq
 
 ### 3.1 领域请求与保存凭据
 
-定义在 include/domain/NewMessage.h，所有字符串和字节数组都拥有自己的内存，不返回 DatabaseResult 的 string_view。
+请求定义在 include/domain/NewMessage.h，完整信封定义在 include/domain/Envelope.h，所有字符串和字节数组都拥有自己的内存，不返回 DatabaseResult 的 string_view。
 
 ```cpp
 struct NewTextMessageRequest {
@@ -40,9 +40,13 @@ struct NewTextMessageRequest {
     std::string protocol_version;
     std::vector<std::uint8_t> packet;
 };
-struct StoredEnvelope {
+struct Envelope {
     boost::uuids::uuid envelope_id;
     boost::uuids::uuid message_id;
+    boost::uuids::uuid sender_device_id;
+    boost::uuids::uuid recipient_device_id;
+    std::string protocol_version;
+    std::vector<std::uint8_t> packet;
     std::int64_t seq;
 };
 ```
@@ -57,7 +61,7 @@ enum class NewMessageStatus {
 };
 struct NewMessageResult {
     NewMessageStatus status;
-    std::optional<StoredEnvelope> envelope = std::nullopt;
+    std::optional<Envelope> envelope = std::nullopt;
 };
 class EnvelopeRepository {
 public:
@@ -82,7 +86,7 @@ enum class NewTextMessageStatus {
 };
 struct NewTextMessageResult {
     NewTextMessageStatus status;
-    std::optional<StoredEnvelope> envelope = std::nullopt;
+    std::optional<Envelope> envelope = std::nullopt;
 };
 class ChatService {
 public:

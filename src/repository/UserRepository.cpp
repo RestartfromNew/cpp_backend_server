@@ -302,3 +302,47 @@ bool UserRepository::VerifyFriendShip(const boost::uuids::uuid &my_id,const boos
     if (result.rowCount() == 0) return false;
     return true;
 }
+
+bool UserRepository::VerifyUserDeviceRelation(const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id) {
+    const std::string parameters[] = {boost::uuids::to_string(my_id),boost::uuids::to_string(device_id)};
+    ConnectionLease lease{databasePool_};
+    auto result = lease.connection().execute(
+        R"(
+            SELECT
+                CASE
+                    WHEN ud.user_id = $1::uuid THEN 'true'
+                    ELSE 'false'
+                END AS belongs_to_user,
+                CASE
+                    WHEN ud.status = 'active'
+                         AND u.is_active = TRUE THEN 'true'
+                    ELSE 'false'
+                END AS is_active
+            FROM app.user_devices AS ud
+            LEFT JOIN app.users AS u ON u.id = ud.user_id
+            WHERE ud.device_id = $2::uuid
+        )",
+        parameters
+    );
+
+    if (result.rowCount() == 0) {
+        throw DeviceRelationException{
+            DeviceRelationError::NoSuchDevice
+        };
+    }
+
+    // 先验证归属，再检查设备和账号状态。
+    if (result.value(0, 0) != "true") {
+        throw DeviceRelationException{
+            DeviceRelationError::NotYourDevice
+        };
+    }
+
+    if (result.value(0, 1) != "true") {
+        throw DeviceRelationException{
+            DeviceRelationError::NotActivated
+        };
+    }
+
+    return true;
+}

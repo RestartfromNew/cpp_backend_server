@@ -259,7 +259,8 @@ int main()
         ChatService chat_service{envelopeRepository};
         ServiceThreadPool service_thread_pool(2, chat_service);
         WebSocketDispatcher web_socket_dispatcher(service_thread_pool,authMiddleWare);
-        WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher,authMiddleWare);
+        SessionIdentityService sessionIdentityService{userRepository};
+        WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher,authMiddleWare,sessionIdentityService);
         ThreadPool thread_pool(thread_pool_config,server,router,web_socket_pool);
         service_thread_pool.init();
         if (!thread_pool.init())

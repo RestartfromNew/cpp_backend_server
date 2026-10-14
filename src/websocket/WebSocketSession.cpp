@@ -10,10 +10,9 @@
 #include <utility>
 
 WebSocketSession::WebSocketSession(
-    std::uint64_t id,
-    Connection&& connection
-) noexcept
-    : id_(id), connection_(std::move(connection)) {}
+std::uint64_t id, const boost::uuids::uuid &user_id
+     ,const boost::uuids::uuid & device_id,Connection&& connection
+) noexcept: id_(id), user_id_(user_id) ,device_id_(device_id),connection_(std::move(connection)) {}
 
 std::uint64_t WebSocketSession::id() const noexcept {
     return id_;
@@ -271,4 +270,16 @@ void WebSocketSession::markPingSent(Clock::time_point now) {
     ping_sent_at_ = now;
     ping_id_++;
 
+}
+std::uint64_t WebSocketSession::getFdByDeviceId(const boost::uuids::uuid &device_id) {
+    if (device_id_ == device_id) {
+        return connection_.fd();
+    }
+    return -1;
+}
+boost::uuids::uuid WebSocketSession::getDeviceId() {
+    return device_id_;
+}
+std::uint64_t WebSocketSession::getSessionId() {
+    return id_;
 }

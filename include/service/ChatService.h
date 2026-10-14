@@ -12,7 +12,7 @@ enum class NewTextMessageStatus {
 };
 struct NewTextMessageResult {
     NewTextMessageStatus status;
-    std::optional<StoredEnvelope> envelope = std::nullopt;
+    std::optional<Envelope> envelope = std::nullopt;
 };
 class ChatService {
 public:

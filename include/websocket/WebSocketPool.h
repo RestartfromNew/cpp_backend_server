@@ -24,18 +24,27 @@ struct WebSocketPoolConfig {
     int min_capacity;
     int max_task_capacity;
 };
-
+struct OnlineConnection {
+    std::size_t worker_id;     // 属于哪个 Worker
+    int fd;                    // 哪条连接
+    std::uint64_t session_id;  // 防止断线后 fd 重用
+};
 class WebSocketDispatcher;
 
 class WebSocketPool {
     public:
     using Task=std::function<void()>;
-    WebSocketPool(const WebSocketPoolConfig &config,WebSocketDispatcher &dispatcher,AuthMiddleWare &auth_middle_ware);
+    WebSocketPool(const WebSocketPoolConfig &config,WebSocketDispatcher &dispatcher,AuthMiddleWare &auth_middle_ware,SessionIdentityService &sessionIdentityService);
     ~WebSocketPool();
     bool init();
     void close();
     bool forward_connections(PendingWebsocket && request);
+    void push_To_Device(const boost::uuids::uuid &device_id,  nlohmann::json);
+    void addIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id);
+    void removeIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id);
 private:
+    //device_id 和worker的归谁关系
+    std::unordered_map<boost::uuids::uuid,OnlineConnection> online_connections_;
     WebSocketDispatcher &dispatcher_;
     AuthMiddleWare &auth_middle_ware_;
     std::mutex mutex_;
@@ -44,6 +53,8 @@ private:
     bool initialized_ = false;
     bool stopping = true;
     std::size_t next_worker_ = 0;
+    SessionIdentityService &sessionIdentityService_;
+
 };
 
 

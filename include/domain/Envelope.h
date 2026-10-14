@@ -6,6 +6,8 @@
 #define CPP_BACKEND_SERVER_ENVELOPE_H
 #include <boost/uuid/uuid.hpp>
 #include <vector>
+#include <string>
+#include <cstdint>
 struct Envelope {
     boost::uuids::uuid envelope_id;
     boost::uuids::uuid message_id;

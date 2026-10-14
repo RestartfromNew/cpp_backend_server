@@ -1,6 +1,6 @@
 # Backend API Documentation
 
-Last updated: 2026-10-13.
+Last updated: 2026-10-14.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
@@ -345,7 +345,7 @@ Expected: 200, containing a new access_token and the original refresh_token. To 
 
 ### 9.5 Error Cases
 
-Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication or bind the connection to a device. X-Device-Id is not an authentication mechanism; business transactions verify device ownership and active state.
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the device_id handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
 
 Expected in order: 401, 401, 401, 400, 401, assuming requests reach the backend and the database is available.
 
@@ -563,7 +563,7 @@ $processBody = @{
     process = "accepted"
 } | ConvertTo-Json -Compress
 
-Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication or bind the connection to a device. X-Device-Id is not an authentication mechanism; business transactions verify device ownership and active state.
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the device_id handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
 
 # Fetch friends
 Invoke-RestMethod -Method Get `
@@ -663,7 +663,7 @@ This matches the current DeviceKeyBundle model: signed prekey and signature only
 
 ## 18. WebSocket API (current implementation)
 
-HttpSession forwards Upgrade:websocket to the Worker without HTTP Router path validation. Before101, the Worker authenticates the HTTP Authorization header. Missing/invalid tokens receive HTTP401 with invalid_access_token; expired tokens receive access_token_expired. It sends the JSON error and closes instead of upgrading. Sec-WebSocket-Key lookup is case-insensitive and requires a non-empty value; full method, Connection, Version and key-length validation is not implemented.
+Implemented: envelope storage, cursor synchronization, batch receipt ACK, authenticated device-bound upgrade, and cross-Worker online push. Client push handling is detailed in18.13.
 
 ### 18.1 Endpoint, upgrade and authentication
 
@@ -677,6 +677,7 @@ Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
 Authorization: Bearer ACCESS_TOKEN
+device_id: 6b73d84c-f23f-4932-8b4c-d320913914e3
 ```
 
 The sample key is a fixed test vector. Real clients should generate a fresh random 16-byte key and Base64-encode it for each connection. Key response headers:
@@ -692,7 +693,7 @@ Accept is SHA-1 of the client key concatenated with the WebSocket GUID, then Bas
 
 HttpSession forwards Upgrade:websocket to the Worker without HTTP Router path validation. Before101, the Worker authenticates the HTTP Authorization header. Missing/invalid tokens receive HTTP401 with invalid_access_token; expired tokens receive access_token_expired. It sends the JSON error and closes instead of upgrading. Sec-WebSocket-Key lookup is case-insensitive and requires a non-empty value; full method, Connection, Version and key-length validation is not implemented.
 
-Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication or bind the connection to a device. X-Device-Id is not an authentication mechanism; business transactions verify device ownership and active state.
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the device_id handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
 
 ### 18.2 Frame and JSON rules
 
@@ -832,7 +833,7 @@ HTTP login→save token→verify sender device→fetch_friends for Bob's real ac
 
 Receiving flow: HTTP login → authenticated upgrade → chat.sync.envelope → durably save envelopes and per-sender cursors → chat.envelopes.ack → compare acknowledged_ids → repeat with all updated cursors while has_more=true. Previously unknown senders need no initial cursor entry.
 
-Not implemented: recipient push, batch submission, connection device binding, recipient online registry and cross-Worker delivery. Proposed message types in design documents are not aliases for implemented routes. Worker application logs still include authorization; this documentation update does not redact logs.
+Implemented: device-bound sessions, online registry and cross-Worker push. Batch submission, read/decryption receipts and proactive disconnect after device revocation are not implemented. Proposed message types in design documents are not aliases for implemented routes. Worker application logs still include authorization; this documentation update does not redact logs.
 
 ### 18.10 Paginated synchronization: chat.sync.envelope
 
@@ -932,3 +933,95 @@ Synchronization failures use chat.sync.envelope.result; acknowledgment failures 
 | server_busy | Both: task could not be queued |
 
 Neither route has request_id. Execute synchronization and ACK requests sequentially on a connection so errors can be correlated.
+
+### 18.13 Online push: client reception and processing
+
+#### Connect the receiving device
+
+Log in through HTTP, obtain access_token and a registered device_id, then connect to `ws://localhost:8082/` locally or the deployed WSS endpoint such as `wss://aittelegramapi.uk/`. Supply handshake headers `Authorization: Bearer ACCESS_TOKEN` and `device_id: DEVICE_UUID`. Current code reads device_id, not X-Device-Id; ensure proxies forward it.
+
+The server derives user_id from the token and verifies device ownership, active device and active account before registering the bound Session. Do not supply user_id as proof of identity. Token errors return401; device errors return403 with device_not_found, device_not_active or device_not_owned. Missing/malformed device_id and database exceptions currently reach the handshake exception boundary and close the connection without a guaranteed structured HTTP error.
+
+Keep one receive loop running during sends, sync and ACKs. Use a WebSocket library that handles Ping/Pong.
+
+#### Actual pushed message
+
+After committing a new envelope, the server sends an unsolicited Text JSON message:
+
+```json
+{
+  "type": "Online_Sync",
+  "success": true,
+  "duplicate": false,
+  "recipientDeviceId": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "seq": 13,
+  "envelope": {
+    "message_id": "4ffded1c-d415-4adb-a888-703116dc192e",
+    "envelope_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    "sender_device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4",
+    "recipient_device_id": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+    "protocol_version": "TEST-OPAQUE-v1",
+    "packet_base64": "AQID",
+    "seq": 13
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| type | Exact emitted value Online_Sync; internal Worker also accepts online_sync, but that is not the emitted spelling |
+| success / duplicate | Currently true / false for a newly stored envelope; not receipt, decryption or read confirmation |
+| recipientDeviceId / seq | Equal the corresponding envelope fields |
+| envelope.envelope_id | Local deduplication key and ACK identifier |
+| envelope.message_id | Sender retry identifier, not a substitute for envelope deduplication |
+| envelope.sender_device_id / recipient_device_id | Source and target devices; target must match the local connected device |
+| envelope.protocol_version | Protocol packet parsing version |
+| envelope.packet_base64 | Standard Base64 of the complete protocol packet; AQID is test bytes |
+| envelope.seq | Shared bidirectional device-pair sequence, not a global sequence or ratchet counter |
+
+No token, private keys, plaintext or timestamps are included. The sender separately receives newTextMessage.result; the recipient receives Online_Sync. Duplicate submissions currently return duplicate=true to the sender without another push.
+
+#### Dispatch incoming JSON by type
+
+| Type | Action |
+|---|---|
+| Online_Sync | Process the single envelope |
+| chat.sync.envelope.result | Process envelopes, then pagination/cursors |
+| newTextMessage.result | Update outgoing storage state, not recipient delivery state |
+| chat.envelopes.ack.result | Clear only pending IDs present in acknowledged_ids |
+| error | Handle common authentication/format errors by error.code |
+
+Pushes may arrive between a request and its response. Never assume the next received JSON is the response to the last request. Dispatch by type first. There is no request_id; keep same-type requests ordered so failures can be correlated.
+
+#### Store, deduplicate, decrypt and acknowledge
+
+1. Validate the target device and fields; look up envelope_id locally.
+2. Decode packet_base64 into raw bytes. Use the same processing path for synchronized and pushed envelopes.
+3. Durably save the complete envelope and pending ACK in a local transaction. Do not display or ratchet-decrypt duplicates twice; duplicates may be acknowledged again.
+4. Use sender_device_id and protocol rules to select/create the client session and decrypt. The server does not establish the client cryptographic session. Follow the protocol library's out-of-order rules.
+5. After durable storage, ACK immediately or batch1–100 envelopes. Receipt ACK need not wait for decryption. Network receipt or in-memory storage alone is insufficient.
+
+```json
+{
+  "type": "chat.envelopes.ack",
+  "authorization": "Bearer ACCESS_TOKEN",
+  "device_id": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "envelope_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+}
+```
+
+Compare acknowledged_ids as a set and remove only confirmed pending ACKs. Retain and retry the same IDs on failure, timeout or reconnect. Repeated ACKs preserve the first received_at. Keep ciphertext on decryption failure; receipt is not proof of successful decryption.
+
+#### Do not advance sync cursors from push maxima
+
+Pushes and synchronization can interleave; concurrent push queueing is not guaranteed to follow seq order. If your sync cursor is12 and push15 arrives first,13/14 may still be missing. Setting after_seq=15 would skip them.
+
+Keep locally stored envelopes separate from synchronization watermarks. Save/display/ACK pushes, but do not advance sync watermarks solely from the maximum pushed seq. On connect/reconnect, sync from the persisted watermark, deduplicate, and advance after processing each returned page. Bidirectional sequences can legitimately have gaps caused by outgoing messages, so integer continuity and outgoing receipts cannot determine incoming progress.
+
+#### Disconnect and delivery semantics
+
+Pool locates the target Worker; its queued task checks fd, session_id and device before buffering output. Offline/closing/stale sessions may drop the push without rolling back committed storage or setting received_at. A sender's successful receipt does not guarantee recipient delivery.
+
+Start/reconnect flow: valid token → upgrade with device_id → start receive loop → paginate from persisted cursors → deduplicate/store → send/retry ACKs. Handle subsequent pushes and sync again when recovery is needed.
+
+One device has one directory entry; a new connection replaces the index but does not automatically close the old connection or broadcast to all its connections. Token expiry does not currently actively close an established Session, but application sync/ACK requests still authenticate. Refresh via HTTP for later requests and use the new token on reconnect. Proactive closure after device revocation and database revalidation at push delivery are not implemented.

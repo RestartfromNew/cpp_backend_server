@@ -218,7 +218,45 @@ void WebSocketDispatcher::dispatch(nlohmann::json frame,Reply reply) {
                     const auto result = threadPool_.chatService.newTextMessage(
                         userId, senderDeviceId, request);
                     switch (result.status) {
-                        case NewTextMessageStatus::Success:
+                        case NewTextMessageStatus::Success: {
+
+                            if (!result.envelope) {
+                                setError("internal_server_error", "Missing storage result");
+                                break;
+                            }
+                            auto envelope=*(result.envelope);
+                            response["success"] = true;
+                            response["duplicate"] = false;
+                            response["type"] = "newTextMessage.result";
+                            response["message_id"] = boost::uuids::to_string(envelope.message_id);
+                            response["envelope_id"] = boost::uuids::to_string(envelope.envelope_id);
+                            nlohmann::json envelope_body{
+                                {"message_id", boost::uuids::to_string(envelope.message_id)},
+                                {"envelope_id", boost::uuids::to_string(envelope.envelope_id)},
+                                {"sender_device_id",
+                                    boost::uuids::to_string(envelope.sender_device_id)},
+                                {"recipient_device_id",
+                                    boost::uuids::to_string(envelope.recipient_device_id)},
+                                {"protocol_version", envelope.protocol_version},
+                                {"packet_base64", encodePacketBase64(envelope.packet)},
+                                {"seq", envelope.seq}
+                            };
+                            response["seq"] = result.envelope->seq;
+                            nlohmann::json push{
+                                {"type", "Online_Sync"},
+                                {"success", true},
+                                {"duplicate", false},
+                                {"recipientDeviceId", boost::uuids::to_string(envelope.recipient_device_id)},
+                                {"seq", envelope.seq},
+                                {"envelope", std::move(envelope_body)}
+                            };
+                            try {
+                                reply(std::move(push));
+                            } catch (const std::exception&) {
+                                // Storage already committed; synchronization can recover delivery.
+                            }
+                            break;
+                        }
                         case NewTextMessageStatus::Duplicate_request:
                             if (!result.envelope) {
                                 setError("internal_server_error", "Missing storage result");

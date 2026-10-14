@@ -116,9 +116,13 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
                 existing.value(0, 3) != packetHex) {
                 return {NewMessageStatus::Conflict};
             }
-            return {NewMessageStatus::Duplicate_request, StoredEnvelope{
+            return {NewMessageStatus::Duplicate_request, Envelope{
                 .envelope_id = boost::uuids::string_generator{}(std::string{existing.value(0, 0)}),
                 .message_id = request.message_id,
+                .sender_device_id = sender_device_id,
+                .recipient_device_id = request.recipient_device_id,
+                .protocol_version = request.protocol_version,
+                .packet = request.packet,
                 .seq = parseSeq(existing.value(0, 1))
             }};
         }
@@ -140,9 +144,13 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
         if (inserted.rowCount() != 1) {
             throw std::runtime_error("Insert returned unexpected row count");
         }
-        return {NewMessageStatus::Success, StoredEnvelope{
+        return {NewMessageStatus::Success, Envelope{
             .envelope_id = boost::uuids::string_generator{}(std::string{inserted.value(0, 0)}),
             .message_id = request.message_id,
+            .sender_device_id = sender_device_id,
+            .recipient_device_id = request.recipient_device_id,
+            .protocol_version = request.protocol_version,
+            .packet = request.packet,
             .seq = parseSeq(inserted.value(0, 1))
         }};
     }); // withTransaction commits before returning the result to Service.

@@ -1,6 +1,6 @@
 # 服务器后端接口文档
 
-更新时间：2026-10-13。
+更新时间：2026-10-14。
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
@@ -814,7 +814,7 @@ $bundle | ConvertTo-Json -Depth 5
 
 ## 18. WebSocket API（当前实现）
 
-本节按当前 HttpSession、WebsocketWorker、WebSocketSession、WebSocketHandler、WebSocketDispatcher、ChatService 和 EnvelopeRepository 整理。它描述当前代码，而非最终规划。当前支持单目标信封存储、按设备游标分页同步、批量接收确认，以及握手和业务报文 Token 验证。接收方实时推送尚未实现。
+本节按当前 HttpSession、WebsocketWorker、WebSocketSession、WebSocketHandler、WebSocketDispatcher、ChatService 和 EnvelopeRepository 整理。它描述当前代码，而非最终规划。当前支持单目标信封存储、按设备游标分页同步、批量接收确认，以及握手和业务报文 Token 验证。支持接收设备在线推送，包括跨Worker投递；客户端处理见18.13。
 
 ### 18.1 地址、握手与身份验证
 
@@ -830,6 +830,7 @@ Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
 Authorization: Bearer ACCESS_TOKEN
+device_id: 6b73d84c-f23f-4932-8b4c-d320913914e3
 ```
 
 示例Key来自固定测试向量，实际客户端应每次生成新的16字节随机值并Base64编码。
@@ -845,7 +846,7 @@ Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 
 HttpSession 检测 Upgrade:websocket 后转交 Worker，不通过 HTTP Router 验证路径。Worker 在返回101之前验证请求头中的 Access Token；缺失或无效返回 HTTP401，JSON错误码为 invalid_access_token，过期为 access_token_expired，并关闭连接。Sec-WebSocket-Key 按头名称大小写不敏感查找且必须非空；当前没有完整检查方法、Connection、Version和Key长度。
 
-每条业务JSON仍需包含 authorization 或 Authorization 字符串，值为精确前缀 Bearer 加一个空格及有效Token。两者同时存在优先小写字段；类型错误不会回退大写字段。握手验证不替代报文验证，连接尚未绑定设备；X-Device-Id 不是当前设备认证依据。设备归属和有效状态在业务事务中验证。
+每条业务JSON仍需包含 authorization 或 Authorization 字符串，值为精确前缀 Bearer 加一个空格及有效Token。两者同时存在优先小写字段；类型错误不会回退大写字段。握手验证不替代报文验证，连接已绑定验证后的user_id和device_id；握手必须另带device_id头，X-Device-Id不能替代它。设备归属和有效状态在业务事务中验证。
 
 ### 18.2 Frame与JSON编码约定
 
@@ -1007,7 +1008,7 @@ HTTP登录→保存access_token→确认Alice发送设备有效→fetch_friends�
 
 接收流程：HTTP登录→带Token握手→发送 chat.sync.envelope→持久化保存信封及对应设备游标→发送 chat.envelopes.ack→核对 acknowledged_ids→has_more=true 时携带更新后的全部游标继续同步。未知发送设备不必预先加入 cursors。
 
-尚未实现：接收方实时推送、批量提交信封、连接设备绑定、接收设备在线目录与跨Worker投递。设计文档中的其他示例类型不是当前路由的别名。
+已实现在线设备目录和跨Worker推送。尚未实现批量提交信封、已读/解密确认，以及设备撤销时主动断开连接。设计文档中的其他示例类型不是当前路由的别名。
 
 当前Worker仍会打印包含authorization的应用报文；日志脱敏不属于本次文档更新。
 
@@ -1109,3 +1110,96 @@ envelope_ids必填，每次1–100个不重复的非零UUID字符串。事务验
 | server_busy | 两接口：任务未能入队 |
 
 两个接口没有request_id，建议同一连接按请求—响应顺序执行同步及确认，避免同时请求时无法关联错误。
+
+### 18.13 在线推送：客户端接收与处理
+
+#### 建立接收连接
+
+客户端先通过HTTP登录取得access_token及已登记的device_id，再连接本地 `ws://localhost:8082/`；公网使用部署的WSS入口，例如 `wss://aittelegramapi.uk/`。握手请求必须带 `Authorization: Bearer ACCESS_TOKEN` 和 `device_id: 当前设备UUID`。当前代码读取的是device_id头，不是X-Device-Id；经过代理时需确保该头被转发。
+
+服务器验证Token得到user_id，再验证设备归属、active状态及账号有效性，成功后创建绑定user_id/device_id的Session并登记在线目录。客户端不传user_id作为身份依据。Token错误返回401；设备不存在、非active/账号无效、归属错误分别返回403及device_not_found、device_not_active、device_not_owned。缺失或格式错误的device_id以及数据库异常，目前只由握手异常边界记录并关闭，不能保证有结构化HTTP错误响应。
+
+客户端保持一个持续接收循环；发送、同步和ACK期间也不能停止接收。使用WebSocket库处理Ping/Pong，定时重连不能代替控制帧响应。
+
+#### 实际推送报文
+
+服务器在新信封事务提交成功后主动发送下列Text JSON报文，不要求接收者先发同步请求：
+
+```json
+{
+  "type": "Online_Sync",
+  "success": true,
+  "duplicate": false,
+  "recipientDeviceId": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "seq": 13,
+  "envelope": {
+    "message_id": "4ffded1c-d415-4adb-a888-703116dc192e",
+    "envelope_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    "sender_device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4",
+    "recipient_device_id": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+    "protocol_version": "TEST-OPAQUE-v1",
+    "packet_base64": "AQID",
+    "seq": 13
+  }
+}
+```
+
+| 字段 | 客户端解释 |
+|---|---|
+| type | 当前发送值严格为Online_Sync；内部Worker也识别online_sync，但服务器不会主动改成该值 |
+| success / duplicate | 新存储信封推送当前固定true / false，不代表已收到、解密或已读 |
+| recipientDeviceId | 顶层接收设备ID，与envelope.recipient_device_id一致 |
+| seq | 顶层序号，与envelope.seq一致 |
+| envelope.envelope_id | 信封唯一ID，客户端本地去重键和ACK标识 |
+| envelope.message_id | 发送者重试标识；不要用它代替跨设备信封去重键 |
+| envelope.sender_device_id / recipient_device_id | 发送及接收设备；接收设备必须等于当前连接的本地设备 |
+| envelope.protocol_version | 客户端选择协议解析方式的版本 |
+| envelope.packet_base64 | 标准Base64编码的完整协议字节包；AQID为测试字节，不是可解密示例 |
+| envelope.seq | 双向设备对中的顺序号，不是全局序号或棘轮计数 |
+
+推送不包含access_token、私钥、明文、received_at、decrypted_at。数据库提交成功后，发送者另收到newTextMessage.result，接收者收到Online_Sync；两者是不同目标的报文。重复提交同一消息目前只给发送者返回duplicate=true，不再次推送。
+
+#### 接收循环按type分发
+
+| type | 处理 |
+|---|---|
+| Online_Sync | 读取单个envelope，进入本地收信流程 |
+| chat.sync.envelope.result | 成功时逐个处理envelopes，随后处理分页及游标 |
+| newTextMessage.result | 更新本机发送状态；不是对方收到的证明 |
+| chat.envelopes.ack.result | 按acknowledged_ids清理待确认记录 |
+| error | 根据error.code处理Token/公共格式错误 |
+
+在线推送可能穿插在同步或ACK响应之间。不能将“发送请求之后收到的下一条JSON”直接当作该请求响应；必须先按type分发。当前没有request_id，建议同步和ACK请求各保持清晰的顺序，避免多个同类型请求并发无法关联错误。
+
+#### 保存、去重、解密和确认
+
+1. 验证JSON字段和目标设备，按envelope_id检查本地是否已保存。
+2. Base64解码packet_base64得到原始字节。与同步信封使用同一个保存/处理函数，避免两套行为。
+3. 在本地事务中可靠保存完整信封及待ACK记录；已存在的信封不重复展示或重复执行棘轮解密，但可再次确认。
+4. 根据协议和sender_device_id找到会话，必要时按首次消息协议创建会话；服务器不解析或建立客户端加密会话。协议可能允许解密乱序，必须使用协议库规则。
+5. 保存成功后发送ACK，可立即确认单封，也可合并1–100封；无需等待解密成功。仅保存到内存或仅收到网络帧时不要确认。
+
+```json
+{
+  "type": "chat.envelopes.ack",
+  "authorization": "Bearer ACCESS_TOKEN",
+  "device_id": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "envelope_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+}
+```
+
+收到chat.envelopes.ack.result后按集合检查acknowledged_ids，只删除已确认项的本地待ACK记录。失败、超时或断线时保留记录并用相同ID重试；重复确认不会改变首次received_at。解密失败可保留密文并记录错误，received_at不是解密成功证明。
+
+#### 推送不能直接推进同步游标
+
+在线推送和历史同步可能交错，而且并发消息的推送入队顺序不保证与seq一致。比如本地同步游标是12，先收到推送15，数据库中可能还有尚未保存的13、14；直接把after_seq改成15会跳过它们。
+
+建议分别保存“本地已收到信封”和“通过分页同步确认的水位”。在线推送可保存、展示和ACK，但不要仅按推送最大seq推进同步水位。连接建立及重连后仍从原水位执行18.10的同步，去重后按已完成处理的页面推进游标。seq可能有来自自己发送方向的空洞，不能简单要求所有整数连续，也不能用发送回执推进接收水位。
+
+#### 断线、重连与服务端保证
+
+在线目录通过Pool定位目标Worker，发送Task在目标Worker内检查fd、session_id和设备ID后进入输出缓冲。接收者离线、连接正在关闭或任务执行时断线，推送可被丢弃；不会回滚已提交信封，也不会自动设置received_at。即使发送者已拿到成功回执，接收者也可能需要通过同步补取。
+
+客户端启动/重连顺序：取得有效Token→带device_id握手→立即开启接收循环→从持久化游标分页同步→去重保存→发送/重试ACK。以后有新消息时实时处理推送，并在需要补齐时再次同步。
+
+当前同一设备只有一个目录索引，新连接覆盖旧索引；旧连接不会因此自动被关闭，不保证向同一设备所有连接广播。这是单在线目标策略，不是多连接订阅。连接Token过期目前不主动触发断线，但同步/ACK等请求仍验证Token；通过HTTP刷新并为后续请求提供新Token，重连也使用新Token。设备撤销后的连接主动关闭和接收推送时重新验证数据库状态尚未实现。

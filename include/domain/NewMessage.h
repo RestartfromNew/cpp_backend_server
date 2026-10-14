@@ -10,9 +10,5 @@ struct NewTextMessageRequest {
     std::string protocol_version;
     std::vector<std::uint8_t> packet;
 };
-struct StoredEnvelope {
-    boost::uuids::uuid envelope_id;
-    boost::uuids::uuid message_id;
-    std::int64_t seq;
-};
+
 #endif

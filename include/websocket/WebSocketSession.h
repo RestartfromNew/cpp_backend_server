@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string_view>
 #include <vector>
+#include <boost/uuid/uuid.hpp>
 #include <nlohmann/json_fwd.hpp>
 #include "nlohmann/json.hpp"
 #include "server/Connection.h"
@@ -43,7 +44,8 @@ struct FrameParseResult {
 class WebSocketSession {
 public:
     using Clock = std::chrono::steady_clock;
-    WebSocketSession(std::uint64_t id, Connection&& connection) noexcept;
+    WebSocketSession(std::uint64_t id, const boost::uuids::uuid &user_id
+        ,const boost::uuids::uuid & device_id,Connection&& connection) noexcept;
     [[nodiscard]] std::uint64_t id() const noexcept;
     Connection& connection() noexcept;
     //frame解析器
@@ -54,13 +56,19 @@ public:
     void recordActivity() noexcept;
     void handlePong() noexcept;
     int getFd();
+    const boost::uuids::uuid& deviceId() const noexcept { return device_id_; }
     //留下心跳检测机制
     bool shouldSendPing(Clock::time_point now,std::chrono::seconds ping_interval) ;
     bool PongTimeout(Clock::time_point now,std::chrono::seconds pong_timeout) ;
     void markPingSent(Clock::time_point now);
+    std::uint64_t getFdByDeviceId(const boost::uuids::uuid &device_id);
+    boost::uuids::uuid getDeviceId();
+    std::uint64_t getSessionId();
 
 
 private:
+    boost::uuids::uuid user_id_;
+    boost::uuids::uuid device_id_;
     std::uint64_t id_;
     Connection connection_;
     //最后一次接收到客户端消息,包括pong和message

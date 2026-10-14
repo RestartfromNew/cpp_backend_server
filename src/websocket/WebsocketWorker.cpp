@@ -17,6 +17,7 @@
 
 #include "http/HttpResponseGenerator.h"
 #include "websocket/WebSocketDispatcher.h"
+#include "websocket/WebSocketPool.h"
 
 namespace {
 
@@ -67,7 +68,9 @@ std::string makeWebSocketAccept(std::string_view clientKey) {
 
 }
 
-WebsocketWorker::WebsocketWorker(WebSocketDispatcher &dispatcher,AuthMiddleWare &auth_middle_ware):dispatcher_(dispatcher),auth_middle_ware_(auth_middle_ware) {
+WebsocketWorker::WebsocketWorker(std::size_t worker_id, WebSocketDispatcher &dispatcher,
+    AuthMiddleWare &auth_middle_ware,SessionIdentityService &sessionIdentityService,WebSocketPool &web_socket_pool)
+:worker_id_(worker_id),dispatcher_(dispatcher),auth_middle_ware_(auth_middle_ware),sessionIdentityService_(sessionIdentityService),pool_(web_socket_pool) {
     //初始化
     epoll_fd_= ::epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ == -1)
@@ -242,11 +245,14 @@ void WebsocketWorker::worker() {
 void WebsocketWorker::removeSession(int fd) {
     //取消监听，删除fd,自动析构
     std::uint64_t sessionId = 0;
+    boost::uuids::uuid device_id;
     const auto iterator = websocket_sessions_map.find(fd);
     if (iterator != websocket_sessions_map.end()) {
         sessionId = iterator->second->id();
+        device_id = iterator->second->getDeviceId();
     }
 
+    pool_.removeIndex(device_id,worker_id_,fd,sessionId);
     ::epoll_ctl(epoll_fd_,EPOLL_CTL_DEL,fd,nullptr);
     closing_sessions_.erase(fd);
     websocket_sessions_map.erase(fd);
@@ -256,6 +262,7 @@ void WebsocketWorker::removeSession(int fd) {
         << ", fd="
         << fd
         << std::endl;
+
 }
 void WebsocketWorker::wakeup() {
     //唤醒接口
@@ -364,6 +371,8 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
     //     std::cerr << "[handshake] header name: " << name << '\n';
     // }
 
+    const auto user_id = std::get<boost::uuids::uuid>(authResult.result);
+
     const auto keyIt = std::find_if(
     request.headers.begin(),
     request.headers.end(),
@@ -385,6 +394,68 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
     if (keyIt == request.headers.end() || keyIt->second.empty()) {
         throw std::runtime_error("Missing Sec-WebSocket-Key header");
     }
+    const auto deviceID = std::find_if(
+    request.headers.begin(),
+    request.headers.end(),
+    [](const auto& entry) {
+        constexpr std::string_view expected = "device_id";
+        const auto& name = entry.first;
+
+        return name.size() == expected.size() &&
+            std::equal(
+                name.begin(), name.end(),
+                expected.begin(),
+                [](unsigned char left, unsigned char right) {
+                    return std::tolower(left) == std::tolower(right);
+                }
+            );
+    }
+);
+
+    if (deviceID == request.headers.end() || deviceID->second.empty()) {
+        throw std::runtime_error("Missing Device ID");
+    }
+    const auto device_id= boost::uuids::string_generator{}(deviceID->second);
+    const auto verify_result=sessionIdentityService_.verifySessionIdentity(user_id,device_id);
+    if (verify_result != IdentityState::Success) {
+        switch (verify_result) {
+            case IdentityState::NoSuchDevice:
+                response = ErrorResponseMaker(
+                    HttpStatus::Forbidden,
+                    "device_not_found",
+                    "Device is not registered"
+                );
+                break;
+
+            case IdentityState::NotActivated:
+                response = ErrorResponseMaker(
+                    HttpStatus::Forbidden,
+                    "device_not_active",
+                    "Device or account is not active"
+                );
+                break;
+
+            case IdentityState::NotYourDevice:
+                response = ErrorResponseMaker(
+                    HttpStatus::Forbidden,
+                    "device_not_owned",
+                    "Device does not belong to the authenticated user"
+                );
+                break;
+
+            default:
+                throw std::logic_error("Unexpected IdentityState");
+        }
+
+        response.headers["Content-Type"] = "application/json";
+        response.headers["Connection"] = "close";
+
+        session.connection.sendAll(
+            response_generator_.generateHttpResponse(response)
+        );
+
+        return; // 验证失败，不继续返回101或创建Session。
+    }
 
     const std::string acceptValue =makeWebSocketAccept(keyIt->second);
     response.status=HttpStatus::Switching_Protocol;
@@ -404,7 +475,7 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
 
     //构造新session
     const std::uint64_t sessionId = generateSessionId();
-    auto newSessionPtr =std::make_unique<WebSocketSession>(sessionId,std::move(session.connection));
+    auto newSessionPtr =std::make_unique<WebSocketSession>(sessionId,user_id,device_id,std::move(session.connection));
     const bool inserted = websocket_sessions_map.emplace(socketFd,std::move(newSessionPtr)).second;
     if (!inserted) {
         throw std::runtime_error("WebSocket fd is already registered");
@@ -418,7 +489,7 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
         websocket_sessions_map.erase(socketFd);
         throw std::system_error(errno,std::generic_category(),"Failed to register WebSocket session");
      }
-
+    pool_.addIndex(device_id,worker_id_,socketFd,sessionId);
 }
 void WebsocketWorker::handleReadable(int fd) {
     auto iterator=websocket_sessions_map.find(fd);
@@ -454,12 +525,20 @@ void WebsocketWorker::handleReadable(int fd) {
             transferTask(
                     //这里还没有进入投递
                     [this,fd,sessionId,response = std::move(response)]() mutable {
-                        const auto sessionIterator =websocket_sessions_map.find(fd);
+                        int targetFd = fd;
+                        std::uint64_t targetSessionId = sessionId;
+                        const auto type = response.value("type", "");
+                        if (type == "online_sync" || type == "Online_Sync") {
+                             const auto recipientDeviceId =boost::uuids::string_generator{}(response.at("envelope").at("recipient_device_id").get<std::string>());
+                             pool_.push_To_Device(recipientDeviceId, std::move(response));
+                             return;
+                         }
+                        const auto sessionIterator =websocket_sessions_map.find(targetFd);
                         if (sessionIterator ==websocket_sessions_map.end()) {
                             return;
                         }
                         WebSocketSession& targetSession =*sessionIterator->second;
-                        if (targetSession.id() != sessionId) {
+                        if (targetSession.id() != targetSessionId) {
                             return;
                         }
                         const std::string responseText =response.dump();
@@ -469,7 +548,7 @@ void WebsocketWorker::handleReadable(int fd) {
                         responseFrame.payload.assign(responseText.begin(),responseText.end());
                         const std::vector<std::uint8_t> encoded =targetSession.FrameEncoder(responseFrame);
                         targetSession.connection().write(std::string_view{reinterpret_cast<const char*>(encoded.data()),encoded.size()});
-                        setWriteInterest(fd, true);
+                        setWriteInterest(targetFd, true);
                     }
                 );
             }
@@ -602,4 +681,37 @@ void WebsocketWorker::handleTimer() {
     for (const int fd: writableFds) {
         setWriteInterest(fd,true);
     }
+}
+void WebsocketWorker::enqueuePush(int fd,std::uint64_t session_id,const boost::uuids::uuid& device_id,nlohmann::json message) {
+    transferTask(
+        [this, fd, session_id, device_id,
+         message = std::move(message)]() mutable {
+            // 此处已经在目标 Worker 线程中执行。
+            const auto iterator = websocket_sessions_map.find(fd);
+            if (iterator == websocket_sessions_map.end() ||
+                closing_sessions_.contains(fd)) {
+                return;
+            }
+            WebSocketSession& session = *iterator->second;
+            // 防止断线后 fd 被其他连接复用。
+            if (session.id() != session_id ||
+                session.deviceId() != device_id) {
+                return;
+            }
+            const std::string text = message.dump();
+            Frame frame;
+            frame.fin = true;
+            frame.opcode = Opcode::Text;
+            frame.payload.assign(text.begin(), text.end());
+            const auto encoded = session.FrameEncoder(frame);
+            // write() 追加到输出缓冲区，实际发送由 handleWritable() 完成。
+            session.connection().write(
+                std::string_view{
+                    reinterpret_cast<const char*>(encoded.data()),
+                    encoded.size()
+                }
+            );
+            setWriteInterest(fd, true);
+        }
+    );
 }

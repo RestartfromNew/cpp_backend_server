@@ -9,7 +9,7 @@
 enum class NewMessageStatus { Success, Duplicate_request, PermissionDenied, Conflict };
 struct NewMessageResult {
     NewMessageStatus status;
-    std::optional<StoredEnvelope> envelope = std::nullopt;
+    std::optional<Envelope> envelope = std::nullopt;
 };
 class EnvelopeRepository {
 public:

@@ -31,6 +31,25 @@ struct PasswordLoginRecord {
 };
 
 
+enum class DeviceRelationError {
+    NoSuchDevice,
+    NotActivated,
+    NotYourDevice
+};
+class DeviceRelationException : public std::runtime_error {
+public:
+    explicit DeviceRelationException(DeviceRelationError error)
+        : std::runtime_error("Device relation verification failed"),
+          error_(error) {}
+
+    DeviceRelationError error() const noexcept {
+        return error_;
+    }
+
+private:
+    DeviceRelationError error_;
+};
+
 class UserRepository {
 public:
     explicit UserRepository(DatabasePool &databasePool);
@@ -45,6 +64,7 @@ public:
     FriendRequestProcessResult processFriendshipRequest(const boost::uuids::uuid& my_id,
         const boost::uuids::uuid& request_id, FriendRequestAction action);
     bool VerifyFriendShip(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id);
+    bool VerifyUserDeviceRelation(const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id);
 
 
 private:

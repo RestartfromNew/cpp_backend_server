@@ -26,8 +26,10 @@
 
 #include "http/AuthMiddleWare.h"
 #include "http/HttpRequest.h"
+#include "service/SessionIdentityService.h"
 #include "websocket/WebSocketHandler.h"
 
+class WebSocketPool;
 class WebSocketDispatcher;
 
 struct PendingWebsocket {
@@ -37,14 +39,17 @@ struct PendingWebsocket {
 class WebsocketWorker {
 public:
     using Task=std::function<void()>;
-    WebsocketWorker(WebSocketDispatcher &dispatcher,AuthMiddleWare &auth_middle_ware);
+    WebsocketWorker(std::size_t worker_id,WebSocketDispatcher &dispatcher,
+        AuthMiddleWare &auth_middle_ware,SessionIdentityService &sessionIdentityService,WebSocketPool &pool);
     ~WebsocketWorker();
     void transferSession(PendingWebsocket session);
     void transferTask(Task task);
     void wakeup();
     void taskWakeup();
 
+    void enqueuePush(int fd,std::uint64_t session_id,const boost::uuids::uuid& device_id,nlohmann::json message);
 private:
+    std::size_t worker_id_;
     WebSocketDispatcher &dispatcher_;
     std::thread thread_;
     int epoll_fd_=-1;
@@ -74,7 +79,9 @@ private:
     void handleWritable(int fd);
     void setWriteInterest(int fd, bool enabled);
     void handleTimer();
+    SessionIdentityService &sessionIdentityService_;
     AuthMiddleWare &auth_middle_ware_;
+    WebSocketPool &pool_;
 
 
 
