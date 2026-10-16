@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <boost/uuid/string_generator.hpp>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 #include <stdexcept>
 #include <charconv>
@@ -20,6 +21,40 @@
 #include <system_error>
 
 namespace {
+// Normalize the new target field and the legacy alias in one place. The actor
+// always comes from authentication, never from the request body.
+std::optional<HttpResponse> normalizeDeviceTarget(
+    nlohmann::json& body, const boost::uuids::uuid& actor) {
+    auto target = actor;
+    bool specified = false;
+    for (const auto* name : {"target_user_id", "friend_id"}) {
+        const auto field = body.find(name);
+        if (field == body.end()) continue;
+        if (!field->is_string()) {
+            return ErrorResponseMaker(HttpStatus::Bad_Request,
+                "invalid_target_user_id", "Target user must be a non-nil UUID string");
+        }
+        try {
+            const auto& text = field->get_ref<const std::string&>();
+            if (text.size() != 36 || text[8] != '-' || text[13] != '-' ||
+                text[18] != '-' || text[23] != '-') throw std::invalid_argument("UUID format");
+            const auto id = boost::uuids::string_generator{}(text);
+            if (id.is_nil()) throw std::invalid_argument("Nil UUID");
+            if (specified && id != target) {
+                return ErrorResponseMaker(HttpStatus::Bad_Request,
+                    "conflicting_target_user_id", "target_user_id and friend_id must agree");
+            }
+            specified = true;
+            target = id;
+        } catch (const std::exception&) {
+            return ErrorResponseMaker(HttpStatus::Bad_Request,
+                "invalid_target_user_id", "Target user must be a non-nil UUID string");
+        }
+    }
+    body["friend_id"] = boost::uuids::to_string(target);
+    return std::nullopt;
+}
+
 bool isHexOfSize(std::string_view text, std::size_t byteCount) {
     if (text.size() != byteCount * 2) {
         return false;
@@ -221,11 +256,12 @@ HttpResponse ChatHandler::getOneTimePrekey(
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
     }
-    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    auto body = nlohmann::json::parse(request.body, nullptr, false);
     if (body.is_discarded() || !body.is_object()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "invalid_json", "Request body must be a valid JSON object");
     }
+    if (const auto error = normalizeDeviceTarget(body, user_id)) return *error;
     boost::uuids::uuid friendId, deviceId;
     for (const auto* field : {"friend_id", "device_id"}) {
         const auto value = body.find(field);
@@ -255,10 +291,10 @@ HttpResponse ChatHandler::getOneTimePrekey(
         switch (result.status) {
             case PrekeyClaimStatus::NotFriends:
                 return ErrorResponseMaker(HttpStatus::Forbidden,
-                    "not_friends", "Target user must be a friend of the authenticated user");
+                    "not_friends", "Target user must be yourself or a friend");
             case PrekeyClaimStatus::DeviceUnavailable:
                 return ErrorResponseMaker(HttpStatus::Forbidden,
-                    "device_unavailable", "Target device must belong to the friend and be active");
+                    "device_unavailable", "Target device must belong to the target user and be active");
             case PrekeyClaimStatus::NoPrekey:
                 return ErrorResponseMaker(HttpStatus::Not_Found,
                     "prekey_unavailable", "No one-time prekey is currently available");
@@ -273,6 +309,8 @@ HttpResponse ChatHandler::getOneTimePrekey(
         response.headers["Content-Type"] = "application/json";
         response.body = nlohmann::json{
             {"friend_id", boost::uuids::to_string(friendId)},
+            {"target_user_id", boost::uuids::to_string(friendId)},
+            {"is_own_device", friendId == user_id},
             {"device_id", boost::uuids::to_string(result.prekey->device_id)},
             {"prekey_id", result.prekey->prekey_id},
             {"public_key_hex", result.prekey->public_key_hex}
@@ -293,17 +331,22 @@ HttpResponse ChatHandler::getOneTimePrekey(
     }
 }
 
-HttpResponse ChatHandler::fetchFriendDevices(
+HttpResponse ChatHandler::fetchUserDevices(
     const HttpRequest& request, const boost::uuids::uuid& user_id) {
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
     }
-    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    auto body = nlohmann::json::parse(request.body, nullptr, false);
     if (body.is_discarded() || !body.is_object()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "invalid_json", "Request body must be a valid JSON object");
     }
+    if (request.path == "/friend_devices" && !body.contains("friend_id") && !body.contains("target_user_id")) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "invalid_friend_id", "friend_id must be a UUID string");
+    }
+    if (const auto error = normalizeDeviceTarget(body, user_id)) return *error;
     const auto field = body.find("friend_id");
     if (field == body.end() || !field->is_string()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
@@ -322,10 +365,10 @@ HttpResponse ChatHandler::fetchFriendDevices(
             "invalid_friend_id", "friend_id must be a UUID string");
     }
     try {
-        const auto result = keyService_.fetchFriendDevices(user_id, friendId);
+        const auto result = keyService_.fetchUserDevices(user_id, friendId);
         if (!result) {
             return ErrorResponseMaker(HttpStatus::Forbidden,
-                "not_friends", "Target user must be a friend of the authenticated user");
+                "not_friends", "Target user must be yourself or a friend");
         }
         auto devices = nlohmann::json::array();
         constexpr char hexDigits[] = "0123456789abcdef";
@@ -338,6 +381,8 @@ HttpResponse ChatHandler::fetchFriendDevices(
             }
             devices.push_back({
                 {"device_id", boost::uuids::to_string(device.device_id)},
+                {"user_id", boost::uuids::to_string(device.user_id)},
+                {"is_own_device", device.user_id == user_id},
                 {"device_name", device.device_name}, {"status", "active"},
                 {"identity_public_key_hex", identityHex},
                 {"protocol_suite", device.protocol_suite}
@@ -348,21 +393,23 @@ HttpResponse ChatHandler::fetchFriendDevices(
         response.headers["Content-Type"] = "application/json";
         response.body = nlohmann::json{
             {"friend_id", boost::uuids::to_string(friendId)},
+            {"target_user_id", boost::uuids::to_string(friendId)},
+            {"is_own_device", friendId == user_id},
             {"devices", std::move(devices)}
         }.dump();
         return response;
     } catch (const DatabaseError& error) {
-        std::cerr << "[fetchFriendDevices] database failure; SQLSTATE=" << error.code() << '\n';
+        std::cerr << "[fetchUserDevices] database failure; SQLSTATE=" << error.code() << '\n';
         if (error.kind() == DatabaseErrorKind::Connection) {
             return ErrorResponseMaker(HttpStatus::Service_Unavailable,
                 "database_unavailable", "Service temporarily unavailable");
         }
         return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
-            "fetch_friend_devices_failed", "Unable to fetch friend devices");
+            "fetch_user_devices_failed", "Unable to fetch user devices");
     } catch (const std::exception&) {
-        std::cerr << "[fetchFriendDevices] unexpected failure\n";
+        std::cerr << "[fetchUserDevices] unexpected failure\n";
         return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
-            "fetch_friend_devices_failed", "Unable to fetch friend devices");
+            "fetch_user_devices_failed", "Unable to fetch user devices");
     }
 }
 
@@ -372,11 +419,12 @@ HttpResponse ChatHandler::getDeviceKeyBundle(
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
     }
-    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    auto body = nlohmann::json::parse(request.body, nullptr, false);
     if (body.is_discarded() || !body.is_object()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "invalid_json", "Request body must be a valid JSON object");
     }
+    if (const auto error = normalizeDeviceTarget(body, user_id)) return *error;
     boost::uuids::uuid friendId, deviceId;
     for (const auto* field : {"friend_id", "device_id"}) {
         const auto value = body.find(field);
@@ -422,6 +470,8 @@ HttpResponse ChatHandler::getDeviceKeyBundle(
         response.headers["Content-Type"] = "application/json";
         response.body = nlohmann::json{
             {"friend_id", boost::uuids::to_string(friendId)},
+            {"target_user_id", boost::uuids::to_string(friendId)},
+            {"is_own_device", friendId == user_id},
             {"device_id", boost::uuids::to_string(result->device_id)},
             {"signed_prekey_id", result->signed_preKey_id},
             {"signed_prekey_public_hex", toHex(result->preKey_public)},

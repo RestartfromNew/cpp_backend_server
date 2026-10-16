@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
+#include <vector>
 #include <memory>
 #include <algorithm>
 #include <cctype>
@@ -46,7 +48,9 @@ public:
     void transferTask(Task task);
     void wakeup();
     void taskWakeup();
-
+    void enqueuecloseSession(int fd,std::uint64_t session_id,const boost::uuids::uuid& device_id);
+    std::future<void> revokeDeviceConnections(const boost::uuids::uuid& user_id,
+        const boost::uuids::uuid& device_id);
     void enqueuePush(int fd,std::uint64_t session_id,const boost::uuids::uuid& device_id,nlohmann::json message);
 private:
     std::size_t worker_id_;
@@ -67,6 +71,8 @@ private:
     std::queue<PendingWebsocket> pending_session_queue_;
     std::unordered_map<int,std::unique_ptr<WebSocketSession>> websocket_sessions_map;
     std::unordered_set<int> closing_sessions_;
+    std::unordered_map<int, std::chrono::steady_clock::time_point> revoke_deadlines_;
+    std::unordered_map<int, std::vector<std::function<void()>>> close_completions_;
     WebSocketMessageHandler message_handler_;
     std::chrono::seconds heartbeat_interval_{30};
     std::chrono::seconds pong_timeout_{10};

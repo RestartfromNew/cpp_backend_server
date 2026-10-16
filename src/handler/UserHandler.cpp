@@ -130,8 +130,9 @@ std::string UserHandler::conversionInput(const std::string& input) {
     return trimmedInput;
 }
 
-UserHandler::UserHandler(UserService& userService,RegisterService& registerService,LoginService &loginService,KeyService& keyService): userService_(userService),registerService_(registerService)
-,loginService_(loginService),keyService_(keyService){}
+UserHandler::UserHandler(UserService& userService,RegisterService& registerService,
+    LoginService &loginService,KeyService& keyService,WebSocketPool &web_socket_pool): userService_(userService),registerService_(registerService)
+,loginService_(loginService),keyService_(keyService),webSocketPool_(web_socket_pool){}
 
 HttpResponse UserHandler::Register(const HttpRequest &request) {
     HttpResponse response;
@@ -544,3 +545,105 @@ HttpResponse UserHandler::FetchUnprocessedFriendship(const HttpRequest& request,
 
 }
 
+HttpResponse UserHandler::RevokeDevice(const HttpRequest& request,const boost::uuids::uuid& my_uuid) {
+    if (request.body.empty()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "missing_request_body", "Request body is required");
+    }
+    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "invalid_json", "Request body must be a valid JSON object");
+    }
+    const auto passwordIterator =body.find("password");
+    if (passwordIterator == body.end() ||!passwordIterator->is_string() ||passwordIterator->get_ref<const std::string&>().empty()) {
+        return ErrorResponseMaker(
+            HttpStatus::Bad_Request,
+            "missing_password",
+            "Password must be a non-empty string"
+        );
+    }
+    std::string userPassword =passwordIterator->get<std::string>();
+    const auto device_id_Iterator =body.find("deviceID");
+    if (device_id_Iterator == body.end() ||!device_id_Iterator->is_string() ||device_id_Iterator->get_ref<const std::string&>().empty()) {
+        return ErrorResponseMaker(
+            HttpStatus::Bad_Request,
+            "missing_deviceID",
+            "deviceID must be a non-empty string"
+        );
+    }
+    const auto device_id_string = device_id_Iterator->get<std::string>();
+    boost::uuids::uuid device_id;
+    try {
+        if (device_id_string.size() != 36 || device_id_string[8] != '-' ||
+            device_id_string[13] != '-' || device_id_string[18] != '-' ||
+            device_id_string[23] != '-') {
+            throw std::invalid_argument("Invalid UUID format");
+        }
+        device_id = boost::uuids::string_generator{}(device_id_string);
+        if (device_id.is_nil()) throw std::invalid_argument("Nil device UUID");
+    } catch (const std::exception&) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "invalid_deviceID", "deviceID must be a non-nil UUID string");
+    }
+    const auto successResponse = [&](bool alreadyRevoked) {
+        const bool websocketClosed = webSocketPool_.closeSession(my_uuid, device_id);
+        HttpResponse response;
+        response.status = websocketClosed ? HttpStatus::Ok : HttpStatus::Accepted;
+        response.headers["Content-Type"] = "application/json";
+        response.body = nlohmann::json{
+            {"device_id", boost::uuids::to_string(device_id)},
+            {"status", "revoked"}, {"already_revoked", alreadyRevoked},
+            {"websocket_closed", websocketClosed}
+        }.dump();
+        return response;
+    };
+    try {
+        // Use the password exactly as supplied; never log it or the request body.
+        const auto result = userService_.revokeUserDevice(my_uuid, device_id, userPassword);
+        if (const auto success = std::get_if<bool>(&result)) {
+            if (*success) {
+                return successResponse(false);
+            }
+
+            throw std::logic_error("Unexpected false revocation result");
+        }
+        switch (std::get<UserServiceErrorCode>(result)) {
+            case UserServiceErrorCode::RevokedDevice:
+                return successResponse(true);
+            case UserServiceErrorCode::UserNotFound:
+                return ErrorResponseMaker(HttpStatus::Not_Found,
+                    "user_not_found", "Password login record not found");
+            case UserServiceErrorCode::InvalidPassword:
+                return ErrorResponseMaker(HttpStatus::Forbidden,
+                    "invalid_password", "Password verification failed");
+            case UserServiceErrorCode::NotYourDevice:
+                return ErrorResponseMaker(HttpStatus::Forbidden,
+                    "device_not_owned", "Device does not belong to the authenticated user");
+            case UserServiceErrorCode::DeviceNotFound:
+                return ErrorResponseMaker(HttpStatus::Not_Found,
+                    "device_not_found", "Device not found");
+            case UserServiceErrorCode::DeviceNotActive:
+                return ErrorResponseMaker(HttpStatus::Conflict,
+                    "device_not_active", "Only active devices can be revoked");
+            default:
+                throw std::logic_error("Unhandled revocation error");
+        }
+    } catch (const DatabaseError& error) {
+        std::cerr << "[RevokeDevice] database failure; SQLSTATE=" << error.code() << '\n';
+        if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08")) {
+            return ErrorResponseMaker(HttpStatus::Service_Unavailable,
+                "database_unavailable", "Retry revocation with the same deviceID");
+        }
+        if (error.code() == "40001" || error.code() == "40P01") {
+            return ErrorResponseMaker(HttpStatus::Service_Unavailable,
+                "retry_later", "Retry revocation with the same deviceID");
+        }
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
+            "revoke_device_failed", "Unable to revoke device");
+    } catch (const std::exception&) {
+        std::cerr << "[RevokeDevice] unexpected failure\n";
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
+            "revoke_device_failed", "Unable to revoke device");
+    }
+}

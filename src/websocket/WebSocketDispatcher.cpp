@@ -135,8 +135,8 @@ WebsocketRouter parseType(const std::string& type) {
         return WebsocketRouter::AckEnvelope;
     return WebsocketRouter::UnKnown;
 }
-WebSocketDispatcher::WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare):threadPool_(threadPool),AuthMiddleWare_(AuthMiddleWare) {};
-void WebSocketDispatcher::dispatch(nlohmann::json frame,Reply reply) {
+WebSocketDispatcher::WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare,SessionIdentityService &session_identity_service):threadPool_(threadPool),AuthMiddleWare_(AuthMiddleWare),sessionIdentityService_(session_identity_service) {};
+void WebSocketDispatcher::dispatch(const boost::uuids::uuid &session_device_id,const boost::uuids::uuid &session_user_id,nlohmann::json frame,Reply reply) {
 
     nlohmann::json payload=std::move(frame["payload"]);
     if (!payload.is_object()) {
@@ -175,11 +175,58 @@ void WebSocketDispatcher::dispatch(nlohmann::json frame,Reply reply) {
     }
     // 认证成功：保存的是用户 UUID
     const auto userId =std::get<boost::uuids::uuid>(authResult.result);
+    if (userId!=session_user_id) {
+        reply(nlohmann::json{
+            {"type", "error"},
+            {"error", {
+                {"code", "accessToken_do_not_match_session"}
+            }}
+        });
+        return;
+    }
+    auto verifyIdentityResult=sessionIdentityService_.verifySessionIdentity(userId,session_device_id);
+    if (verifyIdentityResult!=IdentityState::Success) {
+        reply(nlohmann::json{
+            {"type", "error"},
+            {"error", {
+                {"code", "device_do_not_match_session"}
+            }}
+        });
+        return;
+    }
     nlohmann::json header=frame["header"];
     std::string payload_format= frame["payload_format"];
     // std::string device_id=payload["device_id"];
     // std::string receiver_device_id=payload["receiver_device_id"];
     std::string type=payload["type"];
+    // A user's A1 socket must not send, synchronize or ACK as their A2 device.
+    const char* deviceField = nullptr;
+    const char* responseType = nullptr;
+    if (type == "chat.newTextMessage") {
+        deviceField = "sender_device_id";
+        responseType = "newTextMessage.result";
+    } else if (type == "chat.sync.envelope") {
+        deviceField = "device_id";
+        responseType = "chat.sync.envelope.result";
+    } else if (type == "chat.envelopes.ack") {
+        deviceField = "device_id";
+        responseType = "chat.envelopes.ack.result";
+    }
+    if (deviceField != nullptr) {
+        try {
+            if (requireUuid(payload, deviceField) != session_device_id) {
+                reply(nlohmann::json{{"type", responseType}, {"success", false},
+                    {"error", {{"code", "session_device_mismatch"},
+                               {"message", "Request device must match this WebSocket session"}}}});
+                return;
+            }
+        } catch (const std::invalid_argument&) {
+            reply(nlohmann::json{{"type", responseType}, {"success", false},
+                {"error", {{"code", "invalid_request"},
+                           {"message", "A valid session device UUID is required"}}}});
+            return;
+        }
+    }
     switch (parseType(type)) {
         case WebsocketRouter::NewTextMessageTest: {
             //这里task是整个函数体，并没有执行函数

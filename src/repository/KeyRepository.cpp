@@ -195,9 +195,22 @@ Device KeyRepository::RegisterNewDevice(const boost::uuids::uuid &user_id,std::s
     });
 }
 
-void KeyRepository::createNewOnetimeKey(const boost::uuids::uuid &device_id,std::unordered_map<int,std::string> prekey_record) {
+bool KeyRepository::createNewOnetimeKey(const boost::uuids::uuid& user_id,
+    const boost::uuids::uuid &device_id,std::unordered_map<int,std::string> prekey_record) {
     ConnectionLease lease(databasePool_);
-    return lease.connection().withTransaction([&]()->void {
+    return lease.connection().withTransaction([&]()->bool {
+        const std::string deviceParameters[] = {
+            boost::uuids::to_string(user_id), boost::uuids::to_string(device_id)};
+        // Recheck under a lock held until all inserts commit or roll back.
+        auto device = lease.connection().execute(R"(
+            SELECT ud.device_id
+            FROM app.user_devices AS ud
+            JOIN app.users AS u ON u.id = ud.user_id
+            WHERE ud.user_id = $1::uuid AND ud.device_id = $2::uuid
+              AND ud.status = 'active' AND u.is_active = TRUE
+            FOR SHARE OF ud, u
+        )", deviceParameters);
+        if (device.rowCount() == 0) return false;
         for (auto i: prekey_record) {
             int index=i.first;
             std::string prekey=i.second;
@@ -222,6 +235,7 @@ void KeyRepository::createNewOnetimeKey(const boost::uuids::uuid &device_id,std:
             parameters
         );
         }
+        return true;
     });
 }
 
@@ -238,14 +252,16 @@ PrekeyClaimResult KeyRepository::getOneTimeKey(
     return lease.connection().withTransaction([&]() -> PrekeyClaimResult {
         // Hold authorization rows until the claim commits, so deletion/revocation
         // cannot race between authorization and consuming the prekey.
-        auto friendship = lease.connection().execute(R"(
-            SELECT fr.id
-            FROM app.friend_relation AS fr
-            WHERE fr.user_id = $1::uuid AND fr.friend_id = $2::uuid
-            FOR SHARE OF fr
-        )", friendshipParameters);
-        if (friendship.rowCount() == 0) {
-            return {PrekeyClaimStatus::NotFriends};
+        if (my_id != friend_id) {
+            auto friendship = lease.connection().execute(R"(
+                SELECT fr.id
+                FROM app.friend_relation AS fr
+                WHERE fr.user_id = $1::uuid AND fr.friend_id = $2::uuid
+                FOR SHARE OF fr
+            )", friendshipParameters);
+            if (friendship.rowCount() == 0) {
+                return {PrekeyClaimStatus::NotFriends};
+            }
         }
         auto device = lease.connection().execute(R"(
             SELECT ud.device_id
@@ -289,7 +305,7 @@ PrekeyClaimResult KeyRepository::getOneTimeKey(
     });
 }
 
-std::vector<Device> KeyRepository::GetFriendDevicesByUserId(
+std::vector<Device> KeyRepository::GetUserDevicesByUserId(
     const boost::uuids::uuid& my_id, const boost::uuids::uuid& friend_id) {
     const std::string parameters[] = {
         boost::uuids::to_string(my_id), boost::uuids::to_string(friend_id)
@@ -306,10 +322,10 @@ std::vector<Device> KeyRepository::GetFriendDevicesByUserId(
           AND ud.status = 'active'
           AND friend_user.is_active = TRUE
           AND current_user_record.is_active = TRUE
-          AND EXISTS (
+          AND ($1::uuid = $2::uuid OR EXISTS (
               SELECT 1 FROM app.friend_relation AS fr
               WHERE fr.user_id = $1::uuid AND fr.friend_id = $2::uuid
-          )
+          ))
         ORDER BY ud.created_at, ud.device_id
     )", parameters);
     std::vector<Device> devices;
@@ -359,12 +375,12 @@ std::optional<DeviceKeyBundle> KeyRepository::getDeviceKeyBundle(const boost::uu
               kb.expires_at IS NULL
               OR kb.expires_at > CURRENT_TIMESTAMP
           )
-          AND EXISTS (
+          AND ($1::uuid = $2::uuid OR EXISTS (
               SELECT 1
               FROM app.friend_relation AS fr
               WHERE fr.user_id = $1::uuid
                 AND fr.friend_id = $2::uuid
-          )
+          ))
     )",
     parameters
 );

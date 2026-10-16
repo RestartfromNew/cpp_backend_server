@@ -20,11 +20,13 @@
 #include <iostream>
 
 #include "service/KeyService.h"
+#include "websocket/WebSocketPool.h"
 
 
 class UserHandler {
 public:
-    explicit UserHandler(UserService& userService,RegisterService& registerService,LoginService& loginService,KeyService& keyService);
+    explicit UserHandler(UserService& userService,RegisterService& registerService,
+        LoginService& loginService,KeyService& keyService,WebSocketPool& webSocketPool);
     HttpResponse getUser(const HttpRequest& request);
     HttpResponse Register(const HttpRequest& request);
     HttpResponse LoginByEmail(const HttpRequest& request);
@@ -35,6 +37,7 @@ public:
     HttpResponse ProcessFriendshipRequest(const HttpRequest& request,
         const boost::uuids::uuid& my_uuid);
     HttpResponse verifyaccess(const HttpRequest& request);
+    HttpResponse RevokeDevice(const HttpRequest& request,const boost::uuids::uuid& my_uuid);
 
 
 private:
@@ -45,6 +48,7 @@ private:
     RegisterService& registerService_;
     LoginService & loginService_;
     KeyService& keyService_;
+    WebSocketPool &webSocketPool_;
 
 };
 

@@ -17,7 +17,7 @@ class KeyService {
     KeyService(KeyRepository &keyRepository, UserRepository &userRepository) ;
     std::optional<bool> verifyDeviceId(const boost::uuids::uuid &user_id,const boost::uuids::uuid &device_id);
     // nullopt: not friends; an empty vector: no effective devices.
-    std::optional<std::vector<Device>> fetchFriendDevices(
+    std::optional<std::vector<Device>> fetchUserDevices(
         const boost::uuids::uuid& my_id, const boost::uuids::uuid& friend_id);
     std::string registerNewDevice(
     const boost::uuids::uuid& user_id,

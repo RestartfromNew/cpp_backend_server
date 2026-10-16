@@ -13,6 +13,8 @@
 #include <vector>
 #include <service/ChatService.h>
 #include <domain/SyncEnvelopeRequest.h>
+
+#include "service/SessionIdentityService.h"
 class ServiceThreadPool;
 
 
@@ -26,8 +28,8 @@ class WebSocketDispatcher {
     using Task=std::function<void()>;
     using Reply = std::function<void(nlohmann::json)>;
     //这个东西负责协调两个池
-    explicit WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare);
-    void dispatch(nlohmann::json frame,Reply reply);
+    explicit WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare,SessionIdentityService &sessionIdentityService);
+    void dispatch(const boost::uuids::uuid &session_device_id,const boost::uuids::uuid &session_user_id,nlohmann::json frame,Reply reply);
 private:
     std::optional<ParsedNewMessage> parseNewMessage(const nlohmann::json& payload,const Reply& reply) const;
     std::optional<SyncEnvelopeRequest> parseSyncEnvelope(
@@ -36,6 +38,7 @@ private:
         const nlohmann::json& payload, const Reply& reply) const;
     ServiceThreadPool &threadPool_;
     AuthMiddleWare &AuthMiddleWare_;
+    SessionIdentityService &sessionIdentityService_;
 
 };
 

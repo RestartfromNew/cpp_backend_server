@@ -42,6 +42,8 @@ class WebSocketPool {
     void push_To_Device(const boost::uuids::uuid &device_id,  nlohmann::json);
     void addIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id);
     void removeIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id);
+    // HTTP/owner threads only; never wait from a WebSocket worker.
+    bool closeSession(const boost::uuids::uuid &user_id,const boost::uuids::uuid &device_id);
 private:
     //device_id 和worker的归谁关系
     std::unordered_map<boost::uuids::uuid,OnlineConnection> online_connections_;

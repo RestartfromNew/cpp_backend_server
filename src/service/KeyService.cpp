@@ -19,12 +19,12 @@ std::optional<bool> KeyService::verifyDeviceId(const boost::uuids::uuid &user_id
     }
     return false;
 }
-std::optional<std::vector<Device>> KeyService::fetchFriendDevices(
+std::optional<std::vector<Device>> KeyService::fetchUserDevices(
     const boost::uuids::uuid& my_id, const boost::uuids::uuid& friend_id) {
-    if (!userRepository_.VerifyFriendShip(my_id, friend_id)) {
+    if (my_id != friend_id && !userRepository_.VerifyFriendShip(my_id, friend_id)) {
         return std::nullopt;
     }
-    return keyRepository_.GetFriendDevicesByUserId(my_id, friend_id);
+    return keyRepository_.GetUserDevicesByUserId(my_id, friend_id);
 }
 std::string KeyService::registerNewDevice(
     const boost::uuids::uuid& user_id,
@@ -79,15 +79,14 @@ bool KeyService::uploadOneTimePrekeys(
     if (!device || device->status != DeviceStatus::active) {
         return false;
     }
-    keyRepository_.createNewOnetimeKey(device_id, prekeys);
-    return true;
+    return keyRepository_.createNewOnetimeKey(user_id, device_id, prekeys);
 }
 
 
 PrekeyClaimResult KeyService::getOneTimePrekey(
     const boost::uuids::uuid& my_id, const boost::uuids::uuid& friend_id,
     const boost::uuids::uuid& device_id) {
-    if (!userRepository_.VerifyFriendShip(my_id, friend_id)) {
+    if (my_id != friend_id && !userRepository_.VerifyFriendShip(my_id, friend_id)) {
         return {PrekeyClaimStatus::NotFriends};
     }
     const auto device = keyRepository_.FindDeviceByDeviceId(friend_id, device_id);

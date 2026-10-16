@@ -36,6 +36,13 @@ enum class DeviceRelationError {
     NotActivated,
     NotYourDevice
 };
+enum class RevokeDeviceResult {
+    Success,
+    DeviceNotFound,
+    NotYourDevice,
+    AlreadyRevoked,
+    DeviceNotActive
+};
 class DeviceRelationException : public std::runtime_error {
 public:
     explicit DeviceRelationException(DeviceRelationError error)
@@ -56,6 +63,7 @@ public:
     std::optional<User> findByEmail(const std::string& email);
     std::optional<User> CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name,const std::string &username);
     std::optional<PasswordLoginRecord> FindLoginRecordByEmail(const std::string &email);
+    std::optional<std::string> FindLoginRecordByUserId(const boost::uuids::uuid &user_id);
     void InsertRefreshToken(const boost::uuids::uuid &id,std::string &refreshToken_hash);
     std::optional<User> FindUserByUsername(const std::string &username);
     void CreateNewFriendship(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id,const std::string &message);
@@ -65,6 +73,8 @@ public:
         const boost::uuids::uuid& request_id, FriendRequestAction action);
     bool VerifyFriendShip(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id);
     bool VerifyUserDeviceRelation(const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id);
+    RevokeDeviceResult revokeUserDevice(const boost::uuids::uuid& my_id,
+        const boost::uuids::uuid& device_id);
 
 
 private:

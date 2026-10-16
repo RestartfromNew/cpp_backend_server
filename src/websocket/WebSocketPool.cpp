@@ -103,3 +103,25 @@ void WebSocketPool::push_To_Device(const boost::uuids::uuid &device_id,  nlohman
 
     websocket_workers_[connection.worker_id]->enqueuePush(connection.fd,connection.session_id,device_id,std::move(message));
 }
+bool WebSocketPool::closeSession(const boost::uuids::uuid &user_id,const boost::uuids::uuid &device_id) {
+    std::vector<std::future<void>> completions;
+    bool allQueued = true;
+    {
+        std::lock_guard lock(mutex_);
+        if (stopping || !initialized_) return false;
+        for (auto& worker : websocket_workers_) {
+            try {
+                completions.push_back(worker->revokeDeviceConnections(user_id, device_id));
+            } catch (const std::exception&) { allQueued = false; }
+        }
+    } // Workers need this mutex for removeIndex; never hold it while waiting.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+    for (auto& completion : completions) {
+        try {
+            if (completion.wait_until(deadline) != std::future_status::ready)
+                allQueued = false;
+            else completion.get();
+        } catch (const std::exception&) { allQueued = false; }
+    }
+    return allQueued;
+}

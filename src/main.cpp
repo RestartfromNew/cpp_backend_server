@@ -100,7 +100,7 @@ int main()
         UserRepository userRepository{databasePool};
         RefreshTokenRepository refreshTokenRepository{databasePool};
         RefreshTokenService refreshTokenService{refreshTokenRepository};
-        UserService userService{userRepository};
+        UserService userService{userRepository,refreshTokenRepository};
         RegisterService registerService{userRepository};
 
 
@@ -118,9 +118,23 @@ int main()
         LoginService loginService{userRepository,refreshTokenService,accessTokenService};
         KeyRepository keyRepository{databasePool};
         KeyService keyService{keyRepository,userRepository};
-        UserHandler userHandler{userService,registerService,loginService,keyService};
+        WebSocketPoolConfig web_socket_pool_config{4,100};
+        EnvelopeRepository envelopeRepository{databasePool};
+        ChatService chat_service{envelopeRepository};
+        ServiceThreadPool service_thread_pool(2, chat_service);
+        SessionIdentityService sessionIdentityService{userRepository};
+        WebSocketDispatcher web_socket_dispatcher(service_thread_pool,authMiddleWare,sessionIdentityService);
+        WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher,authMiddleWare,sessionIdentityService);
+        UserHandler userHandler{userService,registerService,loginService,keyService,web_socket_pool};
         ChatHandler chatHandler{keyService};
         Router router{authMiddleWare};
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/revoke_device",
+            [&userHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return userHandler.RevokeDevice(request, user_id);
+            }
+        );
         router.addProtectedRoute(
             HttpMethod::POST,
             "/register_device",
@@ -146,7 +160,14 @@ int main()
             HttpMethod::POST,
             "/friend_devices",
             [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
-                return chatHandler.fetchFriendDevices(request, user_id);
+                return chatHandler.fetchUserDevices(request, user_id);
+            }
+        );
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/user_devices",
+            [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return chatHandler.fetchUserDevices(request, user_id);
             }
         );
         router.addProtectedRoute(
@@ -250,17 +271,10 @@ int main()
         );
 
         //启动服务
-        TcpServer server{"0.0.0.0",8081};
+        TcpServer server{"0.0.0.0",8082};
         //TcpServer server{"0.0.0.0",8082};
         server.start();
         ThreadPoolConfig thread_pool_config{4,8};
-        WebSocketPoolConfig web_socket_pool_config{4,100};
-        EnvelopeRepository envelopeRepository{databasePool};
-        ChatService chat_service{envelopeRepository};
-        ServiceThreadPool service_thread_pool(2, chat_service);
-        WebSocketDispatcher web_socket_dispatcher(service_thread_pool,authMiddleWare);
-        SessionIdentityService sessionIdentityService{userRepository};
-        WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher,authMiddleWare,sessionIdentityService);
         ThreadPool thread_pool(thread_pool_config,server,router,web_socket_pool);
         service_thread_pool.init();
         if (!thread_pool.init())

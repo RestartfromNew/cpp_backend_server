@@ -256,6 +256,15 @@ void WebsocketWorker::removeSession(int fd) {
     ::epoll_ctl(epoll_fd_,EPOLL_CTL_DEL,fd,nullptr);
     closing_sessions_.erase(fd);
     websocket_sessions_map.erase(fd);
+    revoke_deadlines_.erase(fd);
+    const auto completionIt = close_completions_.find(fd);
+    if (completionIt != close_completions_.end()) {
+        auto callbacks = std::move(completionIt->second);
+        close_completions_.erase(completionIt);
+        for (auto& callback : callbacks) {
+            try { callback(); } catch (const std::exception&) {}
+        }
+    }
     std::cout
         << "WebSocket session closed: session="
         << sessionId
@@ -492,6 +501,7 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
     pool_.addIndex(device_id,worker_id_,socketFd,sessionId);
 }
 void WebsocketWorker::handleReadable(int fd) {
+    if (revoke_deadlines_.contains(fd)) return;
     auto iterator=websocket_sessions_map.find(fd);
     if (iterator==websocket_sessions_map.end()) {
         return;
@@ -520,7 +530,7 @@ void WebsocketWorker::handleReadable(int fd) {
             << '\n';
 
         //dispatch的第一个参数是json,第二个是整个reply;在task中传入的response，传入这个lambda
-        dispatcher_.dispatch(std::move(applicationMessage),[this, fd, sessionId](nlohmann::json response) mutable {
+        dispatcher_.dispatch(session.getDeviceId(),session.getUserId(),std::move(applicationMessage),[this, fd, sessionId](nlohmann::json response) mutable {
             //整个lambda函数体就是一个task,调用transferTask会把整个构造任务放在worker的task.queue中
             transferTask(
                     //这里还没有进入投递
@@ -538,7 +548,7 @@ void WebsocketWorker::handleReadable(int fd) {
                             return;
                         }
                         WebSocketSession& targetSession =*sessionIterator->second;
-                        if (targetSession.id() != targetSessionId) {
+                        if (targetSession.id() != targetSessionId || closing_sessions_.contains(targetFd)) {
                             return;
                         }
                         const std::string responseText =response.dump();
@@ -628,6 +638,7 @@ void WebsocketWorker::setWriteInterest(int fd, bool enabled) {
     if (websocket_sessions_map.find(fd) == websocket_sessions_map.end()) return;
     epoll_event event{};
     event.events = EPOLLIN | EPOLLRDHUP;
+    if (revoke_deadlines_.contains(fd)) event.events = EPOLLRDHUP;
     if (enabled) event.events |= EPOLLOUT;
     event.data.fd = fd;
 
@@ -655,6 +666,11 @@ void WebsocketWorker::handleTimer() {
     std::vector<int> writableFds;
     auto now=std::chrono::steady_clock::now();
     for (auto& [fd, session] :websocket_sessions_map){
+        const auto closing = revoke_deadlines_.find(fd);
+        if (closing != revoke_deadlines_.end()) {
+            if (now >= closing->second) expiredFds.push_back(fd);
+            continue;
+        }
         if (session->PongTimeout(now,pong_timeout_)) {
             //超时检测
             expiredFds.push_back(fd);
@@ -714,4 +730,82 @@ void WebsocketWorker::enqueuePush(int fd,std::uint64_t session_id,const boost::u
             setWriteInterest(fd, true);
         }
     );
+}
+void WebsocketWorker::enqueuecloseSession(int fd,std::uint64_t session_id,const boost::uuids::uuid& device_id) {
+    transferTask([this, fd, session_id, device_id] {
+        const auto iterator = websocket_sessions_map.find(fd);
+           if (iterator == websocket_sessions_map.end() ||
+               closing_sessions_.contains(fd)) {
+               return;
+           }
+           WebSocketSession& session = *iterator->second;
+           // 防止断线后 fd 被其他连接复用。
+           if (session.id() != session_id ||
+               session.deviceId() != device_id) {
+               return;
+           }
+        removeSession(fd);
+    });
+
+}
+
+std::future<void> WebsocketWorker::revokeDeviceConnections(
+    const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id) {
+    auto completion = std::make_shared<std::promise<void>>();
+    auto future = completion->get_future();
+    transferTask([this, user_id, device_id, completion] {
+        try {
+            std::vector<int> targets;
+            for (const auto& [fd, session] : websocket_sessions_map) {
+                if (session->getUserId() == user_id && session->deviceId() == device_id)
+                    targets.push_back(fd);
+            }
+            if (targets.empty()) {
+                completion->set_value();
+                return;
+            }
+            // All callbacks run on this Worker; no atomic counter needed.
+            auto remaining = std::make_shared<std::size_t>(targets.size());
+            for (int fd : targets) {
+                close_completions_[fd].push_back([remaining, completion] {
+                    if (--*remaining == 0) completion->set_value();
+                });
+            }
+            for (int fd : targets) {
+                // A retry waits for the original close without extending its deadline.
+                if (revoke_deadlines_.contains(fd)) continue;
+                revoke_deadlines_[fd] = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+                if (closing_sessions_.contains(fd)) {
+                    // Preserve an existing Close frame, but remove read interest
+                    // and enforce the revocation timeout for a slow peer.
+                    setWriteInterest(fd, true);
+                    handleWritable(fd);
+                    continue;
+                }
+                closing_sessions_.insert(fd);
+                try {
+                    // Application-private Close code 4001, UTF-8 reason device_revoked.
+                    Frame closeFrame;
+                    closeFrame.fin = true;
+                    closeFrame.opcode = Opcode::Close;
+                    closeFrame.payload = {0x0f, 0xa1};
+                    const std::string reason = "device_revoked";
+                    closeFrame.payload.insert(closeFrame.payload.end(), reason.begin(), reason.end());
+                    auto& session = *websocket_sessions_map.at(fd);
+                    const auto encoded = session.FrameEncoder(closeFrame);
+                    session.connection().write(std::string_view{
+                        reinterpret_cast<const char*>(encoded.data()), encoded.size()});
+                    setWriteInterest(fd, true);
+                    // Nonblocking flush; EPOLLOUT retries, timer forces slow peers closed.
+                    handleWritable(fd);
+                } catch (const std::exception&) {
+                    removeSession(fd);
+                }
+            }
+        } catch (...) {
+            // Failure is never reported as confirmed closure.
+            try { completion->set_exception(std::current_exception()); } catch (...) {}
+        }
+    });
+    return future;
 }

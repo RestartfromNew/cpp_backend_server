@@ -283,3 +283,6 @@ boost::uuids::uuid WebSocketSession::getDeviceId() {
 std::uint64_t WebSocketSession::getSessionId() {
     return id_;
 }
+boost::uuids::uuid WebSocketSession::getUserId() {
+    return user_id_;
+}

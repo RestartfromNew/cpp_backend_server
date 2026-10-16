@@ -17,7 +17,7 @@ public:
         const boost::uuids::uuid& user_id);
     HttpResponse getOneTimePrekey(const HttpRequest& request,
         const boost::uuids::uuid& user_id);
-    HttpResponse fetchFriendDevices(const HttpRequest& request,
+    HttpResponse fetchUserDevices(const HttpRequest& request,
         const boost::uuids::uuid& user_id);
     HttpResponse getDeviceKeyBundle(const HttpRequest& request,
         const boost::uuids::uuid& user_id);

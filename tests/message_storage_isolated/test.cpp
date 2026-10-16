@@ -23,7 +23,7 @@ int main(){
  changed=request;changed.recipient_device_id.text="ffffffff-ffff-4fff-8fff-ffffffffffff";require(service.newTextMessage(user,sender,changed).envelope->seq==1);
  auto count=pool.connection.records.size();pool.connection.permission=false;require(service.newTextMessage(user,sender,request).status==NewTextMessageStatus::PermissionDenied&&pool.connection.records.size()==count);pool.connection.permission=true;
  pool.connection.friends=false;require(service.newTextMessage(user,sender,request).status==NewTextMessageStatus::PermissionDenied);pool.connection.friends=true;
- pool.connection.sameAccount=true;require(service.newTextMessage(user,sender,request).status==NewTextMessageStatus::PermissionDenied);pool.connection.sameAccount=false;
+ pool.connection.sameAccount=true;pool.connection.friends=false;require(service.newTextMessage(user,sender,request).status==NewTextMessageStatus::Duplicate_request);pool.connection.sameAccount=false;pool.connection.friends=true;
  require(service.newTextMessage({"99999999-9999-4999-8999-999999999999"},sender,request).status==NewTextMessageStatus::PermissionDenied);
  for(int mode=0;mode<6;++mode){changed=request;if(mode==0)changed.packet.clear();if(mode==1)changed.packet.resize(65537);if(mode==2)changed.protocol_version=" ";if(mode==3)changed.protocol_version=std::string(129,'a');if(mode==4)changed.message_id={};if(mode==5)changed.recipient_device_id=sender;int before=pool.connection.transactions;require(service.newTextMessage(user,sender,changed).status==NewTextMessageStatus::InvalidRequest&&pool.connection.transactions==before);}
  changed=request;changed.message_id.text="12345678-1234-4234-8234-123456789abc";

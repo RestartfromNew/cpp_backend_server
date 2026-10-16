@@ -1,10 +1,10 @@
 # 服务器后端接口文档
 
-更新时间：2026-10-14。
+更新时间：2026-10-16。
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
-本文描述当前源代码已经实现的 HTTP 与 WebSocket 接口，而不是计划中的最终设计。根据 `main`、Router、Handler、认证服务、Repository 和 HTTP 解析/响应实现整理；本次未对运行中的服务进行接口实测。部署的可执行文件若未重新编译，行为可能与当前源码不同。
+本文描述当前源代码已经实现的 HTTP 与 WebSocket 接口，而不是计划中的最终设计。根据 `main`、Router、Handler、认证服务、Repository 和 HTTP 解析/响应实现整理。2026-10-16 已根据用户提供的运行输出记录部分设备 HTTP 接口实测结果，范围和未验证项见 20.1；不代表所有接口均已实测。部署的可执行文件若未重新编译，行为可能与当前源码不同。
 
 ## 1. 访问地址与通用约定
 
@@ -44,9 +44,11 @@ X-User-Email: alice@example.com
 | POST | `/register_by_email` | 不需要 | 邮箱密码注册 |
 | POST | `/login_by_email` | 不需要 | 邮箱密码登录并签发两种 Token |
 | POST | `/register_device` | 必须 | 登记设备及带签名预密钥 |
+| POST | `/revoke_device` | 必须 | 密码确认后撤销本人设备；支持重复请求 |
 | POST | `/upload_one_time_prekeys` | 必须 | 上传 1～10 个设备一次性公钥 |
 | POST | `/get_one_time_prekey` | 必须 | 领取好友设备的一次性预密钥 |
-| POST | `/friend_devices` | 必须 | 拉取一个好友的全部有效设备 |
+| POST | `/user_devices` | 必须 | 拉取本人或好友的 active 设备 |
+| POST | `/friend_devices` | 必须 | 兼容旧入口，必须指定目标 |
 | POST | `/get_device_key_bundle` | 必须 | 获取好友设备的带签名预密钥资料 |
 | POST | `/verify_access_token` | 必须 | 验证 Access Token，成功后进入受保护 Handler |
 | GET | `/refresh_token` | 不需要 | 验证 Refresh Token 并签发新的 Access Token |
@@ -699,10 +701,10 @@ $body = @{
 Invoke-RestMethod -Method Post -Uri "http://localhost:8082/upload_one_time_prekeys" -Headers @{ authorization = "Bearer $accessToken" } -ContentType "application/json" -Body $body
 ```
 
-本接口验证格式和设备归属，不证明客户端持有对应私钥。当前设备检查与插入分属两个 Repository 调用；若要求撤销与上传严格互斥，后续应在同一事务中锁定设备并检查状态。
+本接口验证格式和设备归属，不证明客户端持有对应私钥。插入事务会再次校验 active 设备归属及账号状态，并通过 FOR SHARE 锁与设备撤销互斥。
 
 
-## 15. 领取好友设备的一次性预密钥
+## 15. 领取本人或好友设备的一次性预密钥
 
 `POST /get_one_time_prekey`，受保护路由，请求头 `authorization: Bearer <access_token>`。
 此接口会消耗一条 available 预密钥，仅在建立新会话需要它时调用。
@@ -711,9 +713,9 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:8082/upload_one_time_preke
 {"friend_id":"3755178b-3b3d-4cf4-9e61-0aba62fb2875","device_id":"6b73d84c-f23f-4932-8b4c-d320913914e3"}
 ```
 
-friend_id 是目标好友的账号 UUID；device_id 必须是该好友的 active 设备。
+target_user_id（兼容 friend_id）是目标用户 UUID；device_id 必须是该用户的 active 设备。省略目标用户时默认本人。
 调用者来自访问令牌，不接受请求体中的 my_id/user_id 作为调用者身份。
-Service 先检查好友关系和设备归属；Repository 在同一事务内再次检查并以 FOR SHARE 锁定好友关系、目标设备和双方账号，要求双方账号 active。
+目标为别人时 Service 检查好友关系和设备归属，Repository 在同一事务内再次校验并锁定好友关系；目标为本人时仅跳过好友关系要求。两种情况均以 FOR SHARE 锁定目标设备与账号，要求 active。
 然后用 FOR UPDATE SKIP LOCKED 选择一条 available 记录，UPDATE 标记 claimed 并写入 claimed_at。
 提交成功之后才返回 HTTP；未通过权限检查不会领取预密钥。
 
@@ -748,61 +750,71 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_one_time_prekey" 
 当前没有领取限流，上线前须增加以防好友耗尽库存。
 
 
-## 16. 拉取单个好友的全部有效设备
+## 16. 拉取本人或好友的全部 active 设备
 
-受保护接口 `POST /friend_devices`，请求头 `authorization: Bearer <access_token>`。
-请求只接收一个目标好友 UUID；调用者身份来自令牌。
-```json
-{"friend_id":"好友列表实际返回的用户UUID"}
-```
+受保护接口 `POST /user_devices`，请求头 `authorization: Bearer <access_token>`。
 
-Service 先验证好友关系；Repository 查询中再次要求存在该关系，只返回目标好友的 active 设备，且双方账号必须 active。设备按 created_at、device_id 排序，不分页。
-成功返回 200：
+- 查询本人：请求体 `{}`。
+- 查询本人或好友：`{"target_user_id":"目标用户UUID"}`。
+- 兼容旧字段 `friend_id`；两个字段同时传入时必须表示同一个 UUID。
+- 旧路由 `POST /friend_devices` 保留，但仍要求显式传入目标字段。
+
+调用者身份始终来自 Token。本人不需要好友关系；其他用户仍必须是好友。Repository 在查询中再次校验权限，要求账号 active，仅返回目标用户的 active 设备，不包含 pending/revoked。按 created_at、device_id 排序，不分页；没有有效设备时返回 `devices: []`。
+
+列表可能包含当前设备，iOS 建立设备间加密会话时需要自行排除当前 device_id。
+
+本人设备响应示例（UUID、公钥为占位值）：
 ```json
 {
-  "friend_id":"好友UUID",
-  "devices":[{
-    "device_id":"好友设备UUID",
-    "device_name":"Alice的手机",
-    "status":"active",
-    "identity_public_key_hex":"64个十六进制字符",
-    "protocol_suite":"TEST-X25519-XEdDSA-HKDF-SHA256-v1"
+  "target_user_id": "本人用户UUID",
+  "friend_id": "本人用户UUID",
+  "is_own_device": true,
+  "devices": [{
+    "device_id": "本人另一台设备UUID",
+    "user_id": "本人用户UUID",
+    "is_own_device": true,
+    "device_name": "我的iPad",
+    "status": "active",
+    "identity_public_key_hex": "64个十六进制字符",
+    "protocol_suite": "TEST-X25519-XEdDSA-HKDF-SHA256-v1"
   }]
 }
 ```
-没有有效设备时返回 `devices: []`，不是 404。账号停用也不返回设备；若好友关系在前置检查后已删除，查询返回空列表，不泄露设备。
-公钥由 BYTEA 编码为小写 hex；不返回私钥，不领取一次性预密钥。
+好友列表中 `is_own_device` 为 false。该字段由服务器计算，不接受客户端传入值作为权限依据。保留的 `friend_id` 是目标用户的兼容字段，即使查询本人也会返回。
+列表不消耗一次性预密钥。
 
 | HTTP | code | 原因 |
 |---|---|---|
-| 400 | missing_request_body / invalid_json | 请求体缺失或不是 JSON 对象 |
-| 400 | invalid_friend_id | UUID 缺失、类型或格式错误 |
-| 401 | 现有鉴权错误 | 令牌无效或过期 |
-| 403 | not_friends | 不存在好友关系 |
+| 400 | missing_request_body / invalid_json | 必须提供 JSON 对象；查询本人也需要发送 {} |
+| 400 | invalid_target_user_id / conflicting_target_user_id | 目标 UUID 格式、类型、非零校验失败，或两个目标字段冲突 |
+| 400 | invalid_friend_id | 旧 /friend_devices 路由未指定目标 |
+| 401 | 现有鉴权错误 | Token 无效或过期 |
+| 403 | not_friends | 目标不是本人也不是好友 |
 | 503 | database_unavailable | 数据库连接不可用 |
-| 500 | fetch_friend_devices_failed | 其他内部错误 |
+| 500 | fetch_user_devices_failed | 内部错误 |
 
-PowerShell（$login 是当前用户登录结果，$friendId 来自好友列表）：
+PowerShell（按实际服务端口设置 baseUrl）：
 ```powershell
-$deviceQuery = @{ friend_id = $friendId } | ConvertTo-Json -Compress
-$friendDevices = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/friend_devices" -Headers @{ authorization = "Bearer $($login.access_token)" } -ContentType "application/json" -Body $deviceQuery
-$friendDevices | ConvertTo-Json -Depth 5
+$baseUrl = "http://localhost:8082"
+$headers = @{ Authorization = "Bearer $accessToken" }
+$ownDevices = Invoke-RestMethod -Method Post -Uri "$baseUrl/user_devices" -Headers $headers -ContentType "application/json" -Body '{}'
+$friendBody = @{ target_user_id = $friendId } | ConvertTo-Json -Compress
+$friendDevices = Invoke-RestMethod -Method Post -Uri "$baseUrl/user_devices" -Headers $headers -ContentType "application/json" -Body $friendBody
+$ownDevices | ConvertTo-Json -Depth 5
 ```
-当前没有批量 user_ids 接口。收到设备列表后，按建立会话的需要调用 /get_one_time_prekey；不要每次同步就领取所有设备的一次性预密钥。
 
-
-## 17. 获取好友设备的带签名预密钥资料
+## 17. 获取本人或好友设备的带签名预密钥资料
 
 受保护接口 `POST /get_device_key_bundle`，请求头 `authorization: Bearer <access_token>`。
 ```json
 {"friend_id":"好友账号UUID","device_id":"好友设备UUID"}
 ```
-调用者来自访问令牌。Repository 的查询要求双方是好友、双方账号 active、设备属于目标好友且 active、bundle 是当前版本且未过期。
+调用者来自访问令牌。Repository 的查询要求目标是本人或好友、账号 active、设备属于目标用户且 active、bundle 是当前版本且未过期。
 200 响应：
 ```json
 {"friend_id":"好友账号UUID","device_id":"好友设备UUID","signed_prekey_id":42,"signed_prekey_public_hex":"64个hex字符","signed_prekey_signature_hex":"128个hex字符","is_current":true}
 ```
-BYTEA 编码为小写 hex。本接口按当前 DeviceKeyBundle 类型返回带签名预密钥及签名，不含一次性预密钥，不会消耗库存。身份公钥和 protocol_suite 从 /friend_devices 获取；当前类型未返回 key_version、published_at、expires_at。本响应单独不足以构成完整会话初始化包。
+BYTEA 编码为小写 hex。本接口按当前 DeviceKeyBundle 类型返回带签名预密钥及签名，不含一次性预密钥，不会消耗库存。身份公钥和 protocol_suite 从 /user_devices 获取；当前类型未返回 key_version、published_at、expires_at。本响应单独不足以构成完整会话初始化包。
 400: missing_request_body / invalid_json / invalid_friend_id / invalid_device_id；401: 现有鉴权错误；404: key_bundle_unavailable（统一表示关系、归属、状态或资料不可用）；503: database_unavailable；500: fetch_key_bundle_failed。
 
 ```powershell
@@ -811,6 +823,9 @@ $bundle = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_device_
 $bundle | ConvertTo-Json -Depth 5
 ```
 
+
+
+两个密钥接口均支持 `target_user_id`（兼容 `friend_id`）；两个字段均省略时默认本人。例如 `{"device_id":"本人另一台设备UUID"}`。目标冲突返回 400 `conflicting_target_user_id`，格式/类型/非零校验失败返回 400 `invalid_target_user_id`。成功响应在原字段外增加 `target_user_id`、`is_own_device`，保留 `friend_id`；不会返回任何私钥。
 
 ## 18. WebSocket API（当前实现）
 
@@ -830,7 +845,7 @@ Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
 Authorization: Bearer ACCESS_TOKEN
-device_id: 6b73d84c-f23f-4932-8b4c-d320913914e3
+deviceID: 6b73d84c-f23f-4932-8b4c-d320913914e3
 ```
 
 示例Key来自固定测试向量，实际客户端应每次生成新的16字节随机值并Base64编码。
@@ -846,7 +861,7 @@ Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 
 HttpSession 检测 Upgrade:websocket 后转交 Worker，不通过 HTTP Router 验证路径。Worker 在返回101之前验证请求头中的 Access Token；缺失或无效返回 HTTP401，JSON错误码为 invalid_access_token，过期为 access_token_expired，并关闭连接。Sec-WebSocket-Key 按头名称大小写不敏感查找且必须非空；当前没有完整检查方法、Connection、Version和Key长度。
 
-每条业务JSON仍需包含 authorization 或 Authorization 字符串，值为精确前缀 Bearer 加一个空格及有效Token。两者同时存在优先小写字段；类型错误不会回退大写字段。握手验证不替代报文验证，连接已绑定验证后的user_id和device_id；握手必须另带device_id头，X-Device-Id不能替代它。设备归属和有效状态在业务事务中验证。
+每条业务JSON仍需包含 authorization 或 Authorization 字符串，值为精确前缀 Bearer 加一个空格及有效Token。两者同时存在优先小写字段；类型错误不会回退大写字段。握手验证不替代报文验证，连接已绑定验证后的user_id和device_id；握手必须另带deviceID头，X-Device-Id不能替代它。设备归属和有效状态在业务事务中验证。
 
 ### 18.2 Frame与JSON编码约定
 
@@ -897,7 +912,7 @@ AQID是测试字节01 02 03，不是有效加密包。服务器将Base64解码�
 
 ### 18.4 保存权限与序号
 
-服务端从Token获得user_id；客户端sender_device_id只是申请使用的设备，不是可信身份。Repository保存事务检查并锁定：发送设备属于该user_id、双方设备active、双方账号active、双方账号不同、两方向好友关系均存在。当前接口不支持同账号设备同步。
+服务端从Token获得user_id；客户端sender_device_id只是申请使用的设备，不是可信身份。Repository保存事务检查并锁定：发送设备属于该user_id、双方设备active、双方账号active、不同账号时两方向好友关系均存在。同账号的不同 active 设备可直接通信，不要求好友关系；禁止给当前设备自身投递。sender_device_id 必须等于当前 WebSocket 会话设备。
 
 设备对排序后获得事务级advisory lock，seq按该设备对的MAX(seq)+1分配；A1→B1与B1→A1共享序列。不同设备对各自从1开始。seq是整数顺序，不是时间、不参与解密、也不是所有会话共用的同步水位。
 
@@ -1008,7 +1023,7 @@ HTTP登录→保存access_token→确认Alice发送设备有效→fetch_friends�
 
 接收流程：HTTP登录→带Token握手→发送 chat.sync.envelope→持久化保存信封及对应设备游标→发送 chat.envelopes.ack→核对 acknowledged_ids→has_more=true 时携带更新后的全部游标继续同步。未知发送设备不必预先加入 cursors。
 
-已实现在线设备目录和跨Worker推送。尚未实现批量提交信封、已读/解密确认，以及设备撤销时主动断开连接。设计文档中的其他示例类型不是当前路由的别名。
+已实现在线设备目录和跨Worker推送。尚未实现批量提交信封和已读/解密确认；设备撤销已增加全 Worker 关闭与有界完成确认，见第 19 节。设计文档中的其他示例类型不是当前路由的别名。
 
 当前Worker仍会打印包含authorization的应用报文；日志脱敏不属于本次文档更新。
 
@@ -1115,7 +1130,7 @@ envelope_ids必填，每次1–100个不重复的非零UUID字符串。事务验
 
 #### 建立接收连接
 
-客户端先通过HTTP登录取得access_token及已登记的device_id，再连接本地 `ws://localhost:8082/`；公网使用部署的WSS入口，例如 `wss://aittelegramapi.uk/`。握手请求必须带 `Authorization: Bearer ACCESS_TOKEN` 和 `device_id: 当前设备UUID`。当前代码读取的是device_id头，不是X-Device-Id；经过代理时需确保该头被转发。
+客户端先通过HTTP登录取得access_token及已登记的device_id，再连接本地 `ws://localhost:8082/`；公网使用部署的WSS入口，例如 `wss://aittelegramapi.uk/`。握手请求必须带 `Authorization: Bearer ACCESS_TOKEN` 和 `deviceID: 当前设备UUID`。当前代码读取的是deviceID头，不是X-Device-Id；经过代理时需确保该头被转发。 请求头名称按大小写不敏感比较，推荐统一写deviceID；旧device_id头不再作为握手设备头。登录、发送、同步和ACK的JSON字段仍使用device_id或各接口定义的sender_device_id/recipient_device_id，不随请求头改名。
 
 服务器验证Token得到user_id，再验证设备归属、active状态及账号有效性，成功后创建绑定user_id/device_id的Session并登记在线目录。客户端不传user_id作为身份依据。Token错误返回401；设备不存在、非active/账号无效、归属错误分别返回403及device_not_found、device_not_active、device_not_owned。缺失或格式错误的device_id以及数据库异常，目前只由握手异常边界记录并关闭，不能保证有结构化HTTP错误响应。
 
@@ -1200,6 +1215,166 @@ envelope_ids必填，每次1–100个不重复的非零UUID字符串。事务验
 
 在线目录通过Pool定位目标Worker，发送Task在目标Worker内检查fd、session_id和设备ID后进入输出缓冲。接收者离线、连接正在关闭或任务执行时断线，推送可被丢弃；不会回滚已提交信封，也不会自动设置received_at。即使发送者已拿到成功回执，接收者也可能需要通过同步补取。
 
-客户端启动/重连顺序：取得有效Token→带device_id握手→立即开启接收循环→从持久化游标分页同步→去重保存→发送/重试ACK。以后有新消息时实时处理推送，并在需要补齐时再次同步。
+客户端启动/重连顺序：取得有效Token→带deviceID请求头握手→立即开启接收循环→从持久化游标分页同步→去重保存→发送/重试ACK。以后有新消息时实时处理推送，并在需要补齐时再次同步。
 
-当前同一设备只有一个目录索引，新连接覆盖旧索引；旧连接不会因此自动被关闭，不保证向同一设备所有连接广播。这是单在线目标策略，不是多连接订阅。连接Token过期目前不主动触发断线，但同步/ACK等请求仍验证Token；通过HTTP刷新并为后续请求提供新Token，重连也使用新Token。设备撤销后的连接主动关闭和接收推送时重新验证数据库状态尚未实现。
+当前同一设备只有一个目录索引，新连接覆盖旧索引；旧连接不会因此自动被关闭，不保证向同一设备所有连接广播。这是单在线目标策略，不是多连接订阅。连接Token过期目前不主动触发断线，但同步/ACK等请求仍验证Token；通过HTTP刷新并为后续请求提供新Token，重连也使用新Token。撤销现已向所有 Worker 请求关闭同设备连接并有界等待，重复撤销也会重新关闭。main 已完成依赖接线，详见第 19 节的 200/202 与 websocket_closed 语义。
+
+## 19. 撤销设备
+
+### POST /revoke_device
+
+受保护接口，要求 `Authorization: Bearer ACCESS_TOKEN`。用户身份来自 Token，不接受请求体指定 user_id。当前仅撤销本人 active 设备，不删除设备、历史密钥或信封。
+
+请求字段区分大小写：这里保留 `deviceID`，不是 `device_id`；响应沿用设备接口的 `device_id`。
+
+```json
+{
+  "deviceID": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "password": "YOUR_CURRENT_PASSWORD"
+}
+```
+
+password 必须是非空字符串，按原值验证，不去除空格；deviceID 必须是标准带连字符的非零 UUID。额外字段忽略。
+
+撤销且服务端关闭已确认返回 200；尚未确认关闭返回 202。Content-Type 为 application/json：
+
+```json
+{
+  "device_id": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "status": "revoked",
+"already_revoked": false,
+  "websocket_closed": true
+}
+```
+
+已撤销设备再次请求仍需验证密码和归属，返回相同结构、already_revoked=true，不改变首次 revoked_at。超时或提交结果不确定时，可用相同设备 ID 重试。
+
+| HTTP | error.code | 含义 |
+| --- | --- | --- |
+| 400 | missing_request_body | 请求体为空 |
+| 400 | invalid_json | 无效 JSON 或不是对象 |
+| 400 | missing_password | 密码缺失、非字符串或空 |
+| 400 | missing_deviceID | deviceID 缺失、非字符串或空 |
+| 400 | invalid_deviceID | UUID 格式错误或全零 |
+| 401 | invalid_access_token / access_token_expired | 由认证中间件拒绝，未进入 Handler；过期分类受现有验证器实现影响 |
+| 403 | invalid_password | 密码验证失败 |
+| 403 | device_not_owned | 设备不属于当前用户 |
+| 404 | user_not_found | 没有对应密码登录记录 |
+| 404 | device_not_found | 设备不存在 |
+| 409 | device_not_active | pending 等非 active、非 revoked 状态 |
+| 503 | database_unavailable | 数据库连接故障，提交结果可能不确定 |
+| 503 | retry_later | 事务序列化冲突或死锁，可重试 |
+| 500 | revoke_device_failed | 其他数据库或内部错误 |
+
+错误响应使用第 3 节的统一 error 对象。格式检查通过后先验证密码，再判断设备归属和状态。
+
+#### 并发和当前限制
+
+撤销事务锁定设备行并更新 status/revoked_at；预密钥上传和信封写入在事务内锁定设备并检查 active。已先取得锁的写入可以在撤销之前完成；撤销提交后的新操作不能通过状态检查。这不是禁止任意直接 SQL 写入的数据库触发器。
+
+**本接口不是完整的退出登录或远程踢下线。** Refresh Token 尚未绑定设备，不会在此撤销；已签发 Access Token 不会立即失效。撤销会等待本进程所有 Worker 确认关闭，200 表示服务端关闭已确认，202 表示尚未确认；关闭前已缓冲的数据可能到达；账号级接口和新设备注册仍可能接受旧 Token。新握手和有设备状态检查的业务会拒绝已撤销设备。
+
+#### Windows PowerShell 测试
+
+只对测试设备执行，撤销不可通过本接口恢复。以下示例使用域名；直连当前 main 可改为 http://localhost:8081。
+
+```powershell
+$baseUrl = "https://aittelegramapi.uk"
+$token = Read-Host "Access Token"
+$deviceId = Read-Host "Test device UUID to revoke"
+$securePassword = Read-Host "Current password" -AsSecureString
+$password = [System.Net.NetworkCredential]::new("", $securePassword).Password
+$body = @{ deviceID = $deviceId; password = $password } | ConvertTo-Json -Compress
+try {
+    Invoke-RestMethod -Method Post -Uri "$baseUrl/revoke_device" -Headers @{ Authorization = "Bearer $token" } -ContentType "application/json" -Body $body
+    # 重复请求：预期 already_revoked=true。
+    Invoke-RestMethod -Method Post -Uri "$baseUrl/revoke_device" -Headers @{ Authorization = "Bearer $token" } -ContentType "application/json" -Body $body
+} finally {
+    Remove-Variable password, body, token, securePassword -ErrorAction SilentlyContinue
+}
+```
+
+验收还需覆盖：空请求体、坏 JSON、非法 UUID、错误密码、他人设备、不存在设备、pending 设备、数据库失败，以及撤销与预密钥上传/消息写入的并发。本文示例未对在线服务执行。
+
+### 19.1 关闭完成结果与调用链
+
+首次成功和重复撤销均执行：数据库确认 revoked → Pool 向所有 Worker 投递任务 → 每个 Worker 扫描本人该设备的全部 Session → 停止业务收发 → 发送 Close 帧 → 关闭连接并完成 promise → Pool 汇总结果 → HTTP 响应。
+
+main 已调整构造顺序并传入 Pool 引用。Pool 等待时不持有自己的锁；避免 Worker 清理在线索引时死锁。无匹配连接也视为已关闭。
+
+- HTTP 200：status=revoked，websocket_closed=true；所有 Worker 确认匹配连接已从服务端清除，或本来没有连接。
+- HTTP 202：status=revoked，websocket_closed=false；撤销已提交，但关闭因停止、投递失败或等待超时尚未确认。不得继续使用该设备；可以用相同设备 ID 和密码重试，重复撤销也会重新发起关闭。
+- Pool 共享等待上限为 8 秒（任务投递之外）。Worker 为慢连接设置 2 秒关闭期限，由现有 5 秒定时器检查；正常事件调度下可能到下一次定时检查才强制关闭，Worker 阻塞时不保证准时。
+- Close 采用应用私有码 4001，UTF-8 reason 为 device_revoked。帧先加入输出缓冲，排空后关闭 socket；不是等待客户端登出 ACK 的完整远程注销协议。超时、网络故障或本来已进入其他关闭流程时，原因不保证送达。
+- 已有同设备旧连接也会扫描关闭，而非只处理在线索引里最新一条。任务与握手在同一 Worker 串行执行；已在执行的握手会先登记再被扫描，之后的握手依赖已提交的数据库 revoked 检查。
+- 关闭期间拒绝新的业务读取、推送和普通业务回复；撤销前已提交业务不回滚，原输出缓冲的数据可能先于 Close 帧送达。
+- websocket_closed 仅确认本进程服务端连接清理；不确认 iOS 已收到原因、已退出或已删除凭证。运行多个后端实例时，尚无跨实例通知机制。
+
+关闭未确认示例（202）：
+
+```json
+{"device_id":"6b73d84c-f23f-4932-8b4c-d320913914e3","status":"revoked","already_revoked":false,"websocket_closed":false}
+```
+
+### 19.2 iOS 必须执行的登出流程
+
+**被撤销的 iOS 设备在确认撤销且 WebSocket 已关闭或本地已终止后，必须 log out，删除本次登录会话的 Access Token 和 Refresh Token，包括内存及 Keychain 等持久化存储。**
+
+- 本机发起撤销：200/202 中 status=revoked 都代表设备已撤销。立即停止发送、刷新、重连和自动登录；200 确认服务端关闭，202 则由客户端有界等待并主动取消本地连接，不能无限等待或继续用旧 Token。
+- 接收 Close code=4001、reason=device_revoked：对对应连接的当前登录会话执行本地终止和凭证清理，提示“设备已撤销，请重新登录”。不得让旧连接回调清理后来新登录的会话。
+- A 撤销 B：HTTP 响应只给 A；不得清理 A 的凭证。B 通过自己的关闭通知处理；A 只能显示服务器连接清理结果，不能声称 B 已清除凭证。
+- Close 原因丢失时，普通断线不能视为撤销。需要通过明确的设备身份拒绝恢复判断；当前握手 device_not_active 同时覆盖多种无效状态，且未验证 iOS 能否读取失败握手 JSON。专用状态查询仍未实现。
+- 停止接收任务并释放本地 WebSocket；删除两种 Token 和请求头缓存；取消刷新/重连任务；用会话代次阻止在途刷新重新写入 Token；然后显示登录页。凭证删除失败应记录、重试，且不得恢复使用。
+- 可以在确认撤销时提前清理 Token。不要自动删除聊天历史或加密私钥；这是独立的数据保留策略。
+- B 离线/未运行时不能立即执行本地删除。客户端本地清理不等于服务端 JWT 或 Refresh Token 撤销，后者仍未实现设备绑定。
+
+验收：两条同设备连接都关闭、重复撤销、设备本来离线、慢客户端强制关闭/202、安全的 fd 复用、HTTP 与断线顺序不同、普通网络故障不误退出、A 撤销 B 不影响 A、迟到刷新不能恢复凭证。构建和真实双端验收仍待执行。
+
+## 20. 同账号设备的加密会话与收发
+
+1. A1 调用 POST /user_devices，传 {}，获取本人 active 设备并排除 A1 自身。
+2. 针对 A2 获取 bundle，仅在需要建立新会话时领取预密钥。iOS 验证公钥资料并在本地建立 A1↔A2 的加密会话。这不是再与 A2 建立 WebSocket：每台设备仍用自己的 deviceID 连接后端。
+3. A1 为 A2 单独加密，用 chat.newTextMessage 投递，sender_device_id=A1、recipient_device_id=A2。服务端不会重加密或自动广播。给 Bob 发送并同步给自己的 A2，需要分别生成目标设备密文。原有幂等键和设备对 seq 规则不变。
+4. 在线仍通过 Online_Sync 按目标设备推送。离线 chat.sync.envelope 和 chat.envelopes.ack 仍仅操作当前收件设备的信封，同账号发来的信封自动包含其中；不是按 user_id 拉取所有设备的信封。
+5. 发送的 sender_device_id、拉取和 ACK 的 device_id 必须与当前 WebSocket 会话设备相同。不匹配返回对应 result 类型、success=false、error.code=session_device_mismatch；缺失/格式错误返回 invalid_request。A1 不能冒用 A2 的身份拉取或确认。
+6. iOS 可用 is_own_device 区分自身同步与好友消息，但仍需正常验证密钥并解密，避免将同步消息循环转发。本功能不自动迁移旧聊天历史；pending/revoked 设备不开放收发。
+
+部分 HTTP 接口已实测，详情见下节；真实双设备 WebSocket、消息投递与密码学验收仍待执行。隔离测试及完整验收清单见 [测试说明](../tests/message_storage_isolated/README.md)。
+
+### 20.1 设备接口实测记录（2026-10-16）
+
+依据：用户提供的 Windows PowerShell 运行输出，服务地址为 `http://localhost:8082`，Alice 登录成功，使用 [user_devices_test.ps1](../tests/user_devices_test.ps1)。结果：**PASS=87、FAIL=0、SKIP=3**。87 是断言数量，不是 HTTP 请求数；本记录不代表代理重新运行了测试，也不证明隔离 C++ 测试或完整构建已通过。
+
+已验证：
+
+- 默认本人查询、显式 target_user_id 查询、旧 /friend_devices + friend_id 查询、两个相同目标字段查询均返回 200。
+- 四种查询各返回 4 台设备；返回设备的用户归属、active 状态、UUID 唯一性、顶层及逐项 is_own_device=true、公钥 hex 格式和非空协议名称均通过断言。
+- 冲突目标字段返回 400 conflicting_target_user_id。
+- 非法 UUID、全零 UUID、数字类型目标返回 400 invalid_target_user_id。
+- 随机未知目标返回 403 not_friends；旧路由缺失目标返回 400 invalid_friend_id；缺失 Token 返回 401。
+
+| 跳过项 | 原因及下一步 |
+|---|---|
+| 好友设备列表 | 未传 FriendUserId；提供实际已建立好友关系的用户 UUID 后验证 is_own_device=false |
+| 本人设备 bundle | 脚本选中的第一台设备返回 key_bundle_unavailable；需准备当前且未过期的 bundle。不能据此认定其他设备都无 bundle，也不能确定具体是哪项查询条件未满足 |
+| WebSocket 会话绑定 | 未传 SessionDeviceId；提供 Alice 的实际 active 设备 UUID，验证发送、拉取、ACK 的身份冒用被拒绝 |
+
+复测（在 Windows PowerShell 中执行文件，不要把 param/try/catch/finally 分段粘贴）：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\projects\cpp_backend_server\tests\user_devices_test.ps1" -BaseUrl "http://localhost:8082"
+```
+
+追加好友与会话隔离测试：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "D:\projects\cpp_backend_server\tests\user_devices_test.ps1" `
+  -BaseUrl "http://localhost:8082" `
+  -FriendUserId "0776df58-9cbe-4f81-b613-4439f6c3b566" `
+  -SessionDeviceId "替换为Alice的active设备UUID"
+```
+
+前提是该 Bob UUID 在当前数据库中存在且与 Alice 已是好友。密码通过交互输入，不写入文档或输出 Token。
+
+验证边界：返回项均为 active 不等于已用 pending/revoked 测试数据验证过滤。密钥真实性、一次性预密钥领取、成功投递、Online_Sync、离线拉取、ACK 持久化、重复投递及撤销竞争仍需独立验收。脚本本身不会注册/撤销设备、消耗预密钥或写入消息，不验证完整端到端加密。

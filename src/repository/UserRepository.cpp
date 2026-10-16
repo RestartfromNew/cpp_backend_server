@@ -52,6 +52,23 @@ std::optional<PasswordLoginRecord> UserRepository::FindLoginRecordByEmail(const 
         .username = std::string{result.value(0, 4)}
     };
 }
+std::optional<std::string> UserRepository::FindLoginRecordByUserId(const boost::uuids::uuid &user_id) {
+    const std::string parameters[] = {boost::uuids::to_string(user_id)};
+    ConnectionLease lease(databasePool_);
+    auto result = lease.connection().execute(
+        R"(
+        SELECT
+            p.password_hash
+        FROM app.password_credentials AS p
+        WHERE p.user_id = $1::uuid
+    )",
+        parameters
+    );
+    if (result.rowCount() == 0) {
+        return std::nullopt;
+    }
+    return  std::string{result.value(0, 0)};
+}
 
 std::optional<User> UserRepository::findByEmail(const std::string& email)
 {
@@ -130,7 +147,7 @@ std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &emai
                     password_hash
                 )
                 VALUES ($1, $2, $3)
-            )", credentialParameters
+            )",   credentialParameters
         );
 
         return user;
@@ -158,6 +175,39 @@ std::optional<User> UserRepository::FindUserByUsername(const std::string &userna
     };
 
 }
+RevokeDeviceResult UserRepository::revokeUserDevice(
+    const boost::uuids::uuid& my_id, const boost::uuids::uuid& device_id) {
+    const std::string parameters[] = {boost::uuids::to_string(device_id)};
+    const std::string actor = boost::uuids::to_string(my_id);
+    ConnectionLease lease{databasePool_};
+    return lease.connection().withTransaction([&]() -> RevokeDeviceResult {
+        // All dependent writes lock this row FOR SHARE and check active
+        // in their own transaction. No table-wide or child-row locks needed.
+        auto device = lease.connection().execute(R"(
+            SELECT user_id, status
+            FROM app.user_devices
+            WHERE device_id = $1::uuid
+            FOR UPDATE
+        )", parameters);
+        if (device.rowCount() == 0) return RevokeDeviceResult::DeviceNotFound;
+        // Check ownership before exposing lifecycle state.
+        if (device.value(0, 0) != actor) return RevokeDeviceResult::NotYourDevice;
+        if (device.value(0, 1) == "revoked") return RevokeDeviceResult::AlreadyRevoked;
+        if (device.value(0, 1) != "active") return RevokeDeviceResult::DeviceNotActive;
+        auto updated = lease.connection().execute(R"(
+            UPDATE app.user_devices
+            SET status = 'revoked', revoked_at = CURRENT_TIMESTAMP
+            WHERE device_id = $1::uuid AND status = 'active'
+            RETURNING device_id
+        )", parameters);
+        if (updated.rowCount() != 1) {
+            throw std::logic_error("Locked device was not revoked");
+        }
+        // Preserve historical keys/envelopes. Device status controls access.
+        return RevokeDeviceResult::Success;
+    }); // Commit before success; database failures propagate.
+}
+
 void UserRepository::CreateNewFriendship(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id,const std::string &message) {
     const std::string Parameters[] = {boost::uuids::to_string(my_id),boost::uuids::to_string(friend_id),"pending",message};
     ConnectionLease lease(databasePool_);
@@ -274,7 +324,7 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
             SET status = $2, processed_at = CURRENT_TIMESTAMP
             WHERE id = $1 AND status = 'pending'
             RETURNING id
-        )",  update);
+        )",   update);
         if (updated.rowCount() != 1) return FriendRequestProcessResult::Conflict;
 
         if (action == FriendRequestAction::Accept) {

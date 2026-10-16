@@ -88,21 +88,24 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
                 recipientUserId = std::string{devices.value(i, 1)};
             }
         }
-        if (recipientUserId.empty() || recipientUserId == userId) {
-            // This endpoint is friend messaging, not same-account device synchronization.
+        if (recipientUserId.empty()) {
             return {NewMessageStatus::PermissionDenied};
         }
-        const std::string friendshipParameters[] = {userId, recipientUserId};
-        auto friendships = lease.connection().execute(R"(
+        // Different active devices of the same account need no friendship row.
+        // Device ownership and account activity remain checked under row locks above.
+        if (recipientUserId != userId) {
+            const std::string friendshipParameters[] = {userId, recipientUserId};
+            auto friendships = lease.connection().execute(R"(
             SELECT fr.user_id
             FROM app.friend_relation AS fr
             WHERE (fr.user_id = $1::uuid AND fr.friend_id = $2::uuid)
                OR (fr.user_id = $2::uuid AND fr.friend_id = $1::uuid)
             ORDER BY fr.user_id, fr.friend_id
             FOR SHARE OF fr
-        )", friendshipParameters);
-        if (friendships.rowCount() != 2) {
-            return {NewMessageStatus::PermissionDenied};
+            )", friendshipParameters);
+            if (friendships.rowCount() != 2) {
+                return {NewMessageStatus::PermissionDenied};
+            }
         }
         const std::string lookupParameters[] = {senderId, recipientId, messageId};
         auto existing = lease.connection().execute(R"(
@@ -202,6 +205,8 @@ std::optional<EnvelopePage> EnvelopeRepository::syncEnvelopeRecord(
             FROM app.message_envelopes AS env
             LEFT JOIN client_cursors AS cursor
                 ON cursor.peer_device_id = env.sender_device_id
+            -- Same-account and friend envelopes share this device-scoped inbox.
+            -- Never broaden this to a user-wide query: other devices have other keys.
             WHERE env.recipient_device_id = $1::uuid
               AND env.seq > COALESCE(cursor.after_seq, 0::bigint)
             ORDER BY env.sender_device_id, env.seq, env.envelope_id

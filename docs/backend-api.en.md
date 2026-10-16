@@ -1,10 +1,10 @@
 # Backend API Documentation
 
-Last updated: 2026-10-14.
+Last updated: 2026-10-16.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
-This document describes the HTTP and WebSocket endpoints implemented in the current source code, not a planned final design. It is based on main, Router, Handlers, authentication services, Repositories, and HTTP parsing/response code. No live endpoint tests were performed for this documentation. A deployed executable that has not been rebuilt may behave differently from the current source.
+This document describes the HTTP and WebSocket endpoints implemented in the current source code, not a planned final design. It is based on main, Router, Handlers, authentication services, Repositories, and HTTP parsing/response code. Section 20.1 records limited device HTTP tests from user-supplied output on 2026-10-16; other endpoints are not thereby verified. A deployed executable that has not been rebuilt may behave differently from the current source.
 
 ## 1. Base URLs and General Conventions
 
@@ -44,9 +44,11 @@ The client must calculate Content-Length; do not copy the example value 123. Aut
 | POST | `/register_by_email` | Not required | Register with email and password |
 | POST | `/login_by_email` | Not required | Log in and issue both types of token |
 | POST | `/register_device` | Required | Register device and signed prekey |
+| POST | `/revoke_device` | Required | Revoke an owned device after password verification; repeatable |
 | POST | `/upload_one_time_prekeys` | Required | Upload 1–10 device one-time public keys |
 | POST | `/get_one_time_prekey` | Required | Claim a friend device one-time prekey |
-| POST | `/friend_devices` | Required | List all effective devices of one friend |
+| POST | `/user_devices` | Required | List active devices of yourself or a friend |
+| POST | `/friend_devices` | Required | Legacy alias with explicit target |
 | POST | `/get_device_key_bundle` | Required | Fetch a friend device signed prekey bundle |
 | POST | `/verify_access_token` | Required | Verify an Access Token and enter a protected Handler |
 | GET | `/refresh_token` | Not required | Validate a Refresh Token and issue a new Access Token |
@@ -345,7 +347,7 @@ Expected: 200, containing a new access_token and the original refresh_token. To 
 
 ### 9.5 Error Cases
 
-Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the device_id handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the deviceID handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
 
 Expected in order: 401, 401, 401, 400, 401, assuming requests reach the backend and the database is available.
 
@@ -563,7 +565,7 @@ $processBody = @{
     process = "accepted"
 } | ConvertTo-Json -Compress
 
-Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the device_id handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the deviceID handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
 
 # Fetch friends
 Invoke-RestMethod -Method Get `
@@ -626,40 +628,64 @@ IDs must be unique within the batch and must not already exist for this device. 
 
 Success: `201`, `{"device_id":"c3939b6f-ee63-4448-b6ae-949a8bf47d49","uploaded_count":1}`.
 Errors use the existing error/code/message envelope: 400 for invalid input or duplicate IDs within the batch; 401 for authentication failure; 403 `device_unavailable`; 409 `prekey_already_exists`; 503 `database_unavailable`; 500 `upload_prekeys_failed`.
-Validation checks encoding and device ownership, not possession of the private key. The ownership check and insertion currently use separate Repository calls; strict serialization with device revocation requires a device lock and status check in the insertion transaction.
+Validation checks encoding and device ownership, not possession of the private key. Insertion rechecks active device ownership and account status under FOR SHARE locks in the same transaction, serialized with device revocation.
 
 
-## 15. Claim a friend's device one-time prekey
+## 15. Claim your own or a friend's device one-time prekey
 
 Protected `POST /get_one_time_prekey`, with `authorization: Bearer <access_token>`.
 Request: `{"friend_id":"FRIEND_UUID","device_id":"FRIEND_DEVICE_UUID"}`.
 Both fields must be canonical UUID strings. The caller is supplied by authentication, never by the request body.
-The Service verifies friendship and active device ownership before claiming. The Repository rechecks authorization in one transaction, locks the friendship, device and both account rows with FOR SHARE, and requires both accounts to be active. It then claims one available prekey using FOR UPDATE SKIP LOCKED and UPDATE RETURNING. A response is sent only after commit; denied requests consume no keys.
+For a different target account, the Service verifies friendship; for your own account it skips only the friendship requirement. It verifies active target device ownership before claiming. The Repository rechecks authorization in one transaction, locks the friendship, device and both account rows with FOR SHARE, and requires both accounts to be active. It then claims one available prekey using FOR UPDATE SKIP LOCKED and UPDATE RETURNING. A response is sent only after commit; denied requests consume no keys.
 200: `{"friend_id":"FRIEND_UUID","device_id":"FRIEND_DEVICE_UUID","prekey_id":1001,"public_key_hex":"64_HEX_CHARACTERS"}`.
 400: missing_request_body, invalid_json, invalid_friend_id or invalid_device_id. 401: existing token errors. 403: not_friends or device_unavailable. 404: prekey_unavailable (including temporarily locked remaining records). 503: database_unavailable. 500: claim_prekey_failed.
 This returns only a one-time prekey, not a complete session bundle. Retry is not idempotent and may consume a different key; claimed keys must not be returned to inventory after response loss. Claim rate limiting is not yet implemented.
 
 
-## 16. List one friend's effective devices
+## 16. List active devices of yourself or a friend
 
-Protected `POST /friend_devices`, header `authorization: Bearer <access_token>`.
-Request: `{"friend_id":"FRIEND_USER_UUID"}`. The caller comes from authentication.
-The Service checks friendship before querying. The Repository also requires friendship in the device query, active accounts on both sides and active target devices. All matching devices are returned, ordered by created_at and device_id.
-200: `{"friend_id":"FRIEND_USER_UUID","devices":[{"device_id":"DEVICE_UUID","device_name":"Alice phone","status":"active","identity_public_key_hex":"64_HEX_CHARACTERS","protocol_suite":"TEST-X25519-XEdDSA-HKDF-SHA256-v1"}]}`.
-No effective devices produces `devices: []`, not 404. Inactive accounts and a friendship removed after the initial check produce no device data. Public keys are lowercase hex. No private keys or one-time prekeys are returned or consumed.
-400: missing_request_body, invalid_json or invalid_friend_id. 401: existing token errors. 403: not_friends. 503: database_unavailable. 500: fetch_friend_devices_failed.
-This endpoint accepts one friend only; no batch user_ids endpoint exists yet.
+Protected `POST /user_devices`, header `authorization: Bearer <access_token>`.
+Send `{}` for your own devices, or `{"target_user_id":"TARGET_USER_UUID"}` for yourself/a friend.
+The caller always comes from the token. The legacy `friend_id` field is accepted; if both fields are present they must identify the same UUID.
+The old `POST /friend_devices` route remains an alias, but still requires an explicit target field.
 
+For your own account no friendship row is required. Other accounts must be friends. The query rechecks authorization and requires active accounts and active target devices; pending/revoked devices are excluded.
+Results are ordered by created_at and device_id, without pagination. An empty result is `devices: []`.
+The current device may be included: clients must exclude their current device ID when establishing peer sessions.
 
-## 17. Fetch a friend device signed prekey bundle
+Example own-account response (UUID/hex values are placeholders):
+```json
+{
+  "target_user_id": "MY_USER_UUID",
+  "friend_id": "MY_USER_UUID",
+  "is_own_device": true,
+  "devices": [{
+    "device_id": "MY_OTHER_DEVICE_UUID",
+    "user_id": "MY_USER_UUID",
+    "is_own_device": true,
+    "device_name": "My iPad",
+    "status": "active",
+    "identity_public_key_hex": "64_HEX_CHARACTERS",
+    "protocol_suite": "TEST-X25519-XEdDSA-HKDF-SHA256-v1"
+  }]
+}
+```
+Friend responses have `is_own_device: false`. The server computes this flag; it is not an authorization input. `friend_id` is retained as a compatibility alias for the target user, even for your own account.
+400: missing_request_body / invalid_json / invalid_target_user_id / conflicting_target_user_id; legacy route missing target: invalid_friend_id. 401: token errors. 403: not_friends. 503: database_unavailable. 500: fetch_user_devices_failed.
+No keys are consumed by listing.
+
+## 17. Fetch your own or a friend's device signed prekey bundle
 
 Protected `POST /get_device_key_bundle`, header `authorization: Bearer <access_token>`.
 Request: `{"friend_id":"FRIEND_UUID","device_id":"DEVICE_UUID"}`.
-The Repository checks friendship, active accounts, active device ownership, and a current unexpired bundle. Caller identity is supplied by authentication.
+The Repository checks that the target is yourself or a friend, active accounts, active target device ownership, and a current unexpired bundle. Caller identity is supplied by authentication.
 200: `{"friend_id":"FRIEND_UUID","device_id":"DEVICE_UUID","signed_prekey_id":42,"signed_prekey_public_hex":"64_HEX_CHARACTERS","signed_prekey_signature_hex":"128_HEX_CHARACTERS","is_current":true}`.
-This matches the current DeviceKeyBundle model: signed prekey and signature only. Identity public key and protocol suite are obtained from /friend_devices; key_version and timestamps are not returned. This response alone is not a complete session initialization bundle. No one-time prekey is consumed.
+This matches the current DeviceKeyBundle model: signed prekey and signature only. Identity public key and protocol suite are obtained from /user_devices; key_version and timestamps are not returned. This response alone is not a complete session initialization bundle. No one-time prekey is consumed.
 400: missing_request_body, invalid_json, invalid_friend_id or invalid_device_id. 401: existing authentication errors. 404: key_bundle_unavailable. 503: database_unavailable. 500: fetch_key_bundle_failed.
 
+
+
+Both key routes accept `target_user_id` (legacy alias: `friend_id`); omitting both defaults to the authenticated user. For example, `{"device_id":"MY_OTHER_DEVICE_UUID"}` requests your own device's keys. Conflicting targets return 400 `conflicting_target_user_id`; malformed/nil targets return 400 `invalid_target_user_id`. Success responses additionally contain `target_user_id` and `is_own_device`, and retain `friend_id`. No private keys are returned.
 
 ## 18. WebSocket API (current implementation)
 
@@ -677,7 +703,7 @@ Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 Sec-WebSocket-Version: 13
 Authorization: Bearer ACCESS_TOKEN
-device_id: 6b73d84c-f23f-4932-8b4c-d320913914e3
+deviceID: 6b73d84c-f23f-4932-8b4c-d320913914e3
 ```
 
 The sample key is a fixed test vector. Real clients should generate a fresh random 16-byte key and Base64-encode it for each connection. Key response headers:
@@ -693,7 +719,7 @@ Accept is SHA-1 of the client key concatenated with the WebSocket GUID, then Bas
 
 HttpSession forwards Upgrade:websocket to the Worker without HTTP Router path validation. Before101, the Worker authenticates the HTTP Authorization header. Missing/invalid tokens receive HTTP401 with invalid_access_token; expired tokens receive access_token_expired. It sends the JSON error and closes instead of upgrading. Sec-WebSocket-Key lookup is case-insensitive and requires a non-empty value; full method, Connection, Version and key-length validation is not implemented.
 
-Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the device_id handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
+Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the deviceID handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
 
 ### 18.2 Frame and JSON rules
 
@@ -744,7 +770,7 @@ AQID encodes test bytes01 02 03, not an encrypted protocol packet. The server st
 
 ### 18.4 Authorization and ordering
 
-user_id comes from the token; sender_device_id is merely a requested sending identity. The storage transaction checks/locks sender ownership, active devices and accounts, different accounts and both directional friendship records. Same-account device synchronization is not supported by this route.
+user_id comes from the token; sender_device_id is merely a requested sending identity. The storage transaction checks/locks sender ownership, active devices and accounts, both directional friendship records for different accounts. Different devices of the same account are allowed without friendship rows. Sending to the same device is rejected. The sender must match the current WebSocket session device.
 
 A canonical unordered device-pair transaction advisory lock protects MAX(seq)+1 allocation. A1→B1 and B1→A1 share a sequence; other pairs have independent sequences starting at1. seq is an integer, not a timestamp, cryptographic counter or global synchronization watermark.
 
@@ -938,7 +964,7 @@ Neither route has request_id. Execute synchronization and ACK requests sequentia
 
 #### Connect the receiving device
 
-Log in through HTTP, obtain access_token and a registered device_id, then connect to `ws://localhost:8082/` locally or the deployed WSS endpoint such as `wss://aittelegramapi.uk/`. Supply handshake headers `Authorization: Bearer ACCESS_TOKEN` and `device_id: DEVICE_UUID`. Current code reads device_id, not X-Device-Id; ensure proxies forward it.
+Log in through HTTP, obtain access_token and a registered device_id, then connect to `ws://localhost:8082/` locally or the deployed WSS endpoint such as `wss://aittelegramapi.uk/`. Supply handshake headers `Authorization: Bearer ACCESS_TOKEN` and `deviceID: DEVICE_UUID`. Current code reads deviceID, not X-Device-Id; ensure proxies forward it. Header lookup is case-insensitive; use deviceID consistently. The old device_id header is no longer the handshake device header. JSON fields remain device_id or the endpoint-specific sender_device_id/recipient_device_id.
 
 The server derives user_id from the token and verifies device ownership, active device and active account before registering the bound Session. Do not supply user_id as proof of identity. Token errors return401; device errors return403 with device_not_found, device_not_active or device_not_owned. Missing/malformed device_id and database exceptions currently reach the handshake exception boundary and close the connection without a guaranteed structured HTTP error.
 
@@ -1022,6 +1048,166 @@ Keep locally stored envelopes separate from synchronization watermarks. Save/dis
 
 Pool locates the target Worker; its queued task checks fd, session_id and device before buffering output. Offline/closing/stale sessions may drop the push without rolling back committed storage or setting received_at. A sender's successful receipt does not guarantee recipient delivery.
 
-Start/reconnect flow: valid token → upgrade with device_id → start receive loop → paginate from persisted cursors → deduplicate/store → send/retry ACKs. Handle subsequent pushes and sync again when recovery is needed.
+Start/reconnect flow: valid token → upgrade with the deviceID header → start receive loop → paginate from persisted cursors → deduplicate/store → send/retry ACKs. Handle subsequent pushes and sync again when recovery is needed.
 
-One device has one directory entry; a new connection replaces the index but does not automatically close the old connection or broadcast to all its connections. Token expiry does not currently actively close an established Session, but application sync/ACK requests still authenticate. Refresh via HTTP for later requests and use the new token on reconnect. Proactive closure after device revocation and database revalidation at push delivery are not implemented.
+One device has one directory entry; a new connection replaces the index but does not automatically close the old connection or broadcast to all its connections. Token expiry does not currently actively close an established Session, but application sync/ACK requests still authenticate. Refresh via HTTP for later requests and use the new token on reconnect. Revocation now broadcasts closure to all Workers and waits with a deadline; repeated revocation retries closure. main dependency wiring is fixed. See Section 19 for 200/202 and websocket_closed semantics.
+
+## 19. Revoke a device
+
+### POST /revoke_device
+
+Protected endpoint requiring `Authorization: Bearer ACCESS_TOKEN`. The user comes from the token, not a body user_id. Revokes an owned active device without deleting its record, historical keys or envelopes.
+
+Field names are case-sensitive. The request preserves `deviceID` (not `device_id`); the response uses `device_id`.
+
+```json
+{
+  "deviceID": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "password": "YOUR_CURRENT_PASSWORD"
+}
+```
+
+password must be a non-empty string and is verified exactly as supplied, without trimming. deviceID must be a standard hyphenated, non-nil UUID. Additional fields are ignored.
+
+HTTP 200 confirms revocation and server closure; 202 means closure is not yet confirmed. Content-Type application/json.
+
+```json
+{
+  "device_id": "6b73d84c-f23f-4932-8b4c-d320913914e3",
+  "status": "revoked",
+"already_revoked": false,
+  "websocket_closed": true
+}
+```
+
+Repeating the request still checks the password and ownership. It returns already_revoked=true and preserves the original revoked_at. Retry the same device ID after timeouts or uncertain commit outcomes.
+
+| HTTP | error.code | Meaning |
+| --- | --- | --- |
+| 400 | missing_request_body | Empty request body |
+| 400 | invalid_json | Invalid JSON or not an object |
+| 400 | missing_password | Missing, non-string or empty password |
+| 400 | missing_deviceID | Missing, non-string or empty deviceID |
+| 400 | invalid_deviceID | Malformed or nil UUID |
+| 401 | invalid_access_token / access_token_expired | Rejected by authentication before the Handler; expiry classification depends on the existing verifier |
+| 403 | invalid_password | Password verification failed |
+| 403 | device_not_owned | Device belongs to another user |
+| 404 | user_not_found | Password login record not found |
+| 404 | device_not_found | Device does not exist |
+| 409 | device_not_active | Pending or another non-active, non-revoked state |
+| 503 | database_unavailable | Connection failure; commit outcome may be uncertain |
+| 503 | retry_later | Serialization failure or deadlock; retry |
+| 500 | revoke_device_failed | Other database or internal failure |
+
+Errors use the common error object in Section 3. After input validation, password verification precedes device ownership/state checks.
+
+#### Concurrency and limitations
+
+Revocation locks the device row and updates status/revoked_at. Prekey upload and envelope writes lock and check the active device within their transactions. A writer that acquired its lock first may finish before revocation; new operations after revocation commits cannot pass the state check. This is not a database trigger preventing arbitrary direct SQL inserts.
+
+**This is not full logout or remote session termination.** Refresh tokens are not device-bound and are not revoked here; existing access tokens do not immediately expire. Revocation waits for all local Workers: 200 confirms server closure; 202 means closure is not yet confirmed. Previously buffered output may still arrive before closure. Account-level endpoints and device registration may still accept old tokens. New handshakes and operations that validate device status reject the revoked device.
+
+#### Windows PowerShell test
+
+Use a disposable test device; this endpoint cannot reactivate it. The example uses the domain. For direct access to the current main, use http://localhost:8081.
+
+```powershell
+$baseUrl = "https://aittelegramapi.uk"
+$token = Read-Host "Access Token"
+$deviceId = Read-Host "Test device UUID to revoke"
+$securePassword = Read-Host "Current password" -AsSecureString
+$password = [System.Net.NetworkCredential]::new("", $securePassword).Password
+$body = @{ deviceID = $deviceId; password = $password } | ConvertTo-Json -Compress
+try {
+    Invoke-RestMethod -Method Post -Uri "$baseUrl/revoke_device" -Headers @{ Authorization = "Bearer $token" } -ContentType "application/json" -Body $body
+    # Repeat: expect already_revoked=true.
+    Invoke-RestMethod -Method Post -Uri "$baseUrl/revoke_device" -Headers @{ Authorization = "Bearer $token" } -ContentType "application/json" -Body $body
+} finally {
+    Remove-Variable password, body, token, securePassword -ErrorAction SilentlyContinue
+}
+```
+
+Also test empty bodies, malformed JSON/UUIDs, wrong passwords, foreign/missing/pending devices, database failures and concurrent revocation versus prekey upload/message writes. No live endpoint requests were executed for this documentation.
+
+### 19.1 Closure completion and call chain
+
+Both initial and repeated revocation execute: confirm database revoked → broadcast to all Workers → scan all sessions owned by that user/device → stop application traffic → queue Close → remove sockets and complete promises → aggregate results → HTTP response.
+
+main now constructs Pool before Handler and passes its reference. Pool releases its mutex before waiting so Worker index cleanup cannot deadlock. No matching sessions counts as closed.
+
+- HTTP 200: status=revoked, websocket_closed=true. All Workers confirmed removal of matching server sessions, or there were none.
+- HTTP 202: status=revoked, websocket_closed=false. Revocation committed, but shutdown, enqueue failure or timeout prevented confirmation. Stop using this device; retry the same device/password. Already-revoked requests also retry closure.
+- Pool uses a shared 8-second wait deadline after task submission. Worker close deadline is 2 seconds, checked by the existing 5-second timer. A blocked Worker can delay enforcement; no hard real-time guarantee.
+- Application-private Close code 4001 carries UTF-8 reason device_revoked. Output is drained before socket removal; this is not a remote logout acknowledgment protocol. Network errors, timeout or an already-closing session can prevent reason delivery.
+- Every same-device session is scanned, not only the latest online index entry. Handshake and revocation tasks run serially on each Worker: in-progress handshakes register before the scan; later handshakes check committed database revocation.
+- Closing sessions reject new business reads, pushes and ordinary replies. Previously committed operations are not undone; previously buffered output may precede Close.
+- websocket_closed confirms cleanup in this server process only, not client receipt, logout or token erasure. Multiple backend instances still need cross-instance coordination.
+
+Unconfirmed closure (202):
+
+```json
+{"device_id":"6b73d84c-f23f-4932-8b4c-d320913914e3","status":"revoked","already_revoked":false,"websocket_closed":false}
+```
+
+### 19.2 Required iOS logout
+
+**After confirming revocation and WebSocket closure/local termination, the affected iOS device must log out and delete both Access Token and Refresh Token for that login session, from memory and persistent stores such as Keychain.**
+
+- Self-revocation: status=revoked in either 200 or 202 confirms revocation. Immediately stop sends, refresh, reconnect and automatic login. 200 confirms server cleanup; for 202, wait a bounded time and cancel the local connection. Never keep using tokens while waiting.
+- Close code 4001 with reason device_revoked: terminate the corresponding current login session, clear credentials and request login. A stale connection callback must not clear a newer login session.
+- A revoking B must not log A out. HTTP responds to A; B handles its own Close notification. A cannot claim that B erased credentials.
+- A missing Close reason or generic network failure is not proof of revocation. An explicit identity rejection is needed for recovery. Handshake device_not_active covers several invalid states and iOS access to handshake JSON remains unverified; no dedicated status endpoint exists yet.
+- Stop the receive task and release WebSocket; delete both tokens and cached headers; cancel refresh/reconnect tasks; guard against late refresh responses restoring credentials; show login. Persistent deletion failure needs retry with credential use disabled.
+- Early token deletion on confirmed revocation is acceptable. Do not automatically delete history or encryption keys.
+- Offline/suspended B cannot erase credentials immediately. Client cleanup does not revoke server-side JWTs or refresh tokens, which remain unbound to devices.
+
+Acceptance: multiple same-device connections, repeat/offline revocation, slow-client timeout/202, fd reuse, either HTTP/disconnect ordering, ordinary network failure, A remaining logged in, and late refresh responses. Build and live two-client verification remain outstanding.
+
+## 20. Same-account device sessions and delivery
+
+1. A1 lists its own active devices with POST /user_devices and {}, then excludes A1 itself.
+2. For each target A2, fetch its bundle and claim a prekey only when needed. The client verifies key material and establishes a device-to-device encrypted session locally. This is not another WebSocket upgrade; each device connects to the server using its own deviceID.
+3. A1 encrypts a separate envelope for A2 and submits chat.newTextMessage with sender_device_id=A1 and recipient_device_id=A2. The server does not re-encrypt or automatically fan out messages. Sending a message to B and synchronizing it to A2 requires separate target-specific ciphertexts. Existing idempotency keys and per-device-pair sequence numbers are unchanged.
+4. Online_Sync routes to the recipient device as before. Offline chat.sync.envelope and chat.envelopes.ack operate only on the current recipient device's inbox, including envelopes from its own account. Never broaden these operations to all devices owned by the user.
+5. For send/sync/ACK, the supplied sender_device_id/device_id must match the authenticated WebSocket session device. Mismatch returns success=false and error.code=session_device_mismatch with the operation's result type. Missing/malformed device fields return invalid_request. An A1 connection cannot read or ACK A2's inbox.
+6. iOS uses is_own_device to select the local own-device synchronization UI/semantics, not to relax cryptographic validation. Prevent sync loops. This does not automatically migrate old message history to new devices. Revoked/pending devices remain ineligible.
+
+Some HTTP checks have now been exercised, as recorded below. Live two-device WebSocket, message delivery and cryptographic acceptance remain outstanding. See the [isolated tests and acceptance checklist](../tests/message_storage_isolated/README.md).
+
+### 20.1 Device HTTP test record (2026-10-16)
+
+Evidence: user-supplied Windows PowerShell output from [user_devices_test.ps1](../tests/user_devices_test.ps1), targeting `http://localhost:8082`, with successful Alice login. Result: **PASS=87, FAIL=0, SKIP=3**. These are assertion counts, not HTTP request counts. This is not an agent rerun or evidence that the isolated C++ tests/full build passed.
+
+Verified:
+
+- Default own-account query, explicit target_user_id, legacy /friend_devices with friend_id, and matching target aliases returned 200.
+- Each query returned four devices. Assertions checked owner, active status, unique UUIDs, top-level/item is_own_device=true, public-key hex format and nonempty protocol name.
+- Conflicting aliases: 400 conflicting_target_user_id.
+- Malformed/nil UUID and numeric target: 400 invalid_target_user_id.
+- Random unknown target: 403 not_friends. Legacy route without target: 400 invalid_friend_id. Missing token: 401.
+
+| Skipped case | Reason / next step |
+|---|---|
+| Friend devices | FriendUserId was omitted; supply an existing friend and verify is_own_device=false |
+| Own-device bundle | The first selected device returned key_bundle_unavailable; prepare a current unexpired bundle. This neither diagnoses the exact failed query condition nor says that all other devices lack bundles |
+| WebSocket session binding | SessionDeviceId was omitted; supply an actual active Alice device and test rejection of mismatched send/sync/ACK identities |
+
+Run the file in Windows PowerShell, rather than pasting its parameter and try/catch/finally blocks separately:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\projects\cpp_backend_server\tests\user_devices_test.ps1" -BaseUrl "http://localhost:8082"
+```
+
+To include friend and WebSocket checks:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "D:\projects\cpp_backend_server\tests\user_devices_test.ps1" `
+  -BaseUrl "http://localhost:8082" `
+  -FriendUserId "0776df58-9cbe-4f81-b613-4439f6c3b566" `
+  -SessionDeviceId "REPLACE_WITH_ALICE_ACTIVE_DEVICE_UUID"
+```
+
+The Bob UUID must exist and already be Alice's friend in the test database. Enter the password interactively; do not log tokens.
+
+Limits: active status in returned rows alone does not verify filtering against pending/revoked fixtures. Key authenticity, prekey claims, successful delivery, Online_Sync, offline sync, persisted ACKs, duplicate delivery and revoke races still require independent acceptance. The script does not register/revoke devices, consume prekeys or insert messages, and does not verify end-to-end encryption.

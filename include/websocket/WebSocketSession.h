@@ -64,6 +64,7 @@ public:
     std::uint64_t getFdByDeviceId(const boost::uuids::uuid &device_id);
     boost::uuids::uuid getDeviceId();
     std::uint64_t getSessionId();
+    boost::uuids::uuid getUserId();
 
 
 private:
