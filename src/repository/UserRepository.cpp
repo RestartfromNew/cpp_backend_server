@@ -4,11 +4,25 @@
 
 #include "repository/UserRepository.h"
 #include <string>
+#include <charconv>
+#include <cstdint>
+#include <string_view>
+#include <system_error>
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/string_generator.hpp>
 #include "databases/DatabaseError.h"
 //知道数据库结果，把数据库转换成领域里的对象
 namespace {
+    TimePoint parseRequestTime(std::string_view text) {
+        std::int64_t microseconds = 0;
+        const auto [end, error] = std::from_chars(
+            text.data(), text.data() + text.size(), microseconds);
+        if (error != std::errc{} || end != text.data() + text.size()) {
+            throw DatabaseError(DatabaseErrorKind::DataConversion, "", "Invalid friend request timestamp");
+        }
+        return TimePoint{std::chrono::duration_cast<TimePoint::duration>(
+            std::chrono::microseconds{microseconds})};
+    }
     //这个命名空间是cpp内部的，只在这里使用
     boost::uuids::uuid parseId(std::string_view text)
     {
@@ -208,19 +222,53 @@ RevokeDeviceResult UserRepository::revokeUserDevice(
     }); // Commit before success; database failures propagate.
 }
 
-void UserRepository::CreateNewFriendship(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id,const std::string &message) {
+FriendshipRequestRecord UserRepository::CreateNewFriendship(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id,const std::string &message) {
     const std::string Parameters[] = {boost::uuids::to_string(my_id),boost::uuids::to_string(friend_id),"pending",message};
     ConnectionLease lease(databasePool_);
-    auto result=lease.connection().execute(
-        R"(
+    auto result = lease.connection().execute(
+    R"(
+        WITH inserted AS (
             INSERT INTO app.friend_request (
                 requester_id,
                 recipient_id,
                 status,
                 message
             )
-            VALUES ($1,$2,$3,$4)
-        )",Parameters);
+            VALUES ($1::uuid, $2::uuid, $3::text, $4::text)
+            RETURNING id, requester_id, message, created_at
+        )
+        SELECT
+            inserted.id AS request_id,
+            u.id,
+            u.username,
+            u.display_name,
+            COALESCE(inserted.message, '') AS message,
+            (EXTRACT(EPOCH FROM inserted.created_at) * 1000000)::bigint AS request_time
+        FROM inserted
+        JOIN app.users AS u ON u.id = inserted.requester_id
+    )",
+    Parameters
+);
+
+    if (result.rowCount() != 1) {
+        throw std::runtime_error(
+            "Insert friend request returned unexpected row count"
+        );
+    }
+
+    return FriendshipRequestRecord{
+        .request_id = boost::uuids::string_generator{}(
+            std::string{result.value(0, 0)}
+        ),
+        .id = boost::uuids::string_generator{}(
+            std::string{result.value(0, 1)}
+        ),
+        .username = std::string{result.value(0, 2)},
+        .display_name = std::string{result.value(0, 3)},
+        .message = std::string{result.value(0, 4)},
+        .request_time = parseRequestTime(result.value(0, 5))
+    };
+
 }
 
 std::optional<std::vector<FriendshipRequestRecord>> UserRepository::FetchUnprocessedRequest(const boost::uuids::uuid &my_id) {
@@ -234,7 +282,7 @@ std::optional<std::vector<FriendshipRequestRecord>> UserRepository::FetchUnproce
             u.username,
             u.display_name,
             fr.message,
-            fr.created_at
+            (EXTRACT(EPOCH FROM fr.created_at) * 1000000)::bigint AS request_time
         FROM app.friend_request AS fr
         JOIN app.users AS u
             ON u.id = fr.requester_id
@@ -250,15 +298,13 @@ std::optional<std::vector<FriendshipRequestRecord>> UserRepository::FetchUnproce
     request_summary.reserve(result.rowCount());
 
     for (std::size_t i = 0; i < result.rowCount(); ++i) {
-        const auto seconds = std::stoll(std::string{result.value(i, 5)});
-        const auto duration =std::chrono::duration_cast<TimePoint::duration>(std::chrono::seconds{seconds});
         request_summary.push_back(FriendshipRequestRecord{
             .request_id = boost::uuids::string_generator{}(std::string{result.value(i, 0)}),
             .id = boost::uuids::string_generator{}(std::string{result.value(i, 1)}),
             .username = std::string{result.value(i, 2)},
             .display_name = std::string{result.value(i, 3)},
             .message = result.isNull(i, 4)? std::string{}: std::string{result.value(i, 4)},
-            .request_time = TimePoint{duration}
+            .request_time = parseRequestTime(result.value(i, 5))
         });
     }
     return request_summary;

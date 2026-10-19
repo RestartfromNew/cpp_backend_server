@@ -26,7 +26,7 @@ public:
 
     std::optional<User> findUserByEmail(const std::string& email);
     std::optional<User> findUserByUserName(const std::string& username);
-    bool requestFriendship(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& friend_uuid,const std::string &message);
+    std::optional<FriendshipRequestRecord> requestFriendship(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& friend_uuid,const std::string &message);
     std::optional<std::vector<FriendshipRequestRecord>> fetchFriendshipRequest(const boost::uuids::uuid& my_uuid);
     std::vector<User> fetchFriends(const boost::uuids::uuid& my_uuid);
     FriendRequestProcessResult processFriendshipRequest(const boost::uuids::uuid& my_uuid,

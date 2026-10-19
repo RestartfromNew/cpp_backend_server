@@ -485,14 +485,29 @@ HttpResponse UserHandler::RequestFriendship(const HttpRequest& request,const boo
         message=messageIterator->get<std::string>();
 
     try {
-        bool result=userService_.requestFriendship(my_uuid,friend_uuid,message);
-        if (result) {
+        auto result=userService_.requestFriendship(my_uuid,friend_uuid,message);
+        if (result!=std::nullopt) {
             response.status=HttpStatus::Ok;
+            try {
+                nlohmann::json online_push;
+                nlohmann::json online_send_request_body;
+                online_send_request_body["request_id"]=boost::uuids::to_string(result->request_id);
+                online_send_request_body["id"]=boost::uuids::to_string(result->id);
+                online_send_request_body["display_name"]=result->display_name;
+                online_send_request_body["username"]=result->username;
+                online_send_request_body["message"] = result->message;
+                online_push["type"] = "friend.request.received";
+                online_push["unprocessed_requests"] =nlohmann::json::array({online_send_request_body});
+                webSocketPool_.push_To_User(friend_uuid,online_push);
+            } catch (const std::exception&) {
+                // The request is already stored; recipients can fetch pending requests.
+                std::cerr << "[RequestFriendship] notification failed after storage\n";
+            }
             return response;
         }
-        else {
             return ErrorResponseMaker(HttpStatus::Conflict,"request_already_exists","Friendship request already exists");
-        }
+
+
 
     }
     catch (const std::exception& error) {

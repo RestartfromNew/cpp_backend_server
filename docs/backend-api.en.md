@@ -440,6 +440,29 @@ Invalid UUID conversion currently occurs outside the try block and may return a 
 A nonexistent target may trigger a foreign-key error mapped to 503, not 404.
 The request message is server-readable text, not end-to-end encrypted chat content.
 
+After storing the request, the Handler attempts push_To_User for the recipient's online devices. Notification construction/queueing exceptions are logged without changing the successful200 empty response into503. Offline or missed notifications are recovered through /fetch_unprocessed_friend_request. Notification is not acceptance and does not use encrypted-envelope ACKs.
+
+The event type is friend.request.received with a single-item unprocessed_requests array matching pending-list fields: request_id and id are UUID strings, id identifies the requester, and message contains the request note. Pool queues a copy to each indexed online device of the recipient, including devices on other Workers. Deduplicate/update by request_id across push and fetch. Fetch pending requests after reconnect or missed delivery. The event is an incremental item, not a full-list replacement, and does not use chat.envelopes.ack.
+
+```json
+{
+  "type": "friend.request.received",
+  "unprocessed_requests": [
+    {
+      "request_id": "efbd99da-b38f-4ee9-9c70-6a2ef96c2820",
+      "id": "85467846-84e3-4bcb-b3f9-a4f5dd1cd492",
+      "display_name": "Alice",
+      "username": "alice_chat01",
+      "message": "Hi Bob, I am Alice!"
+    }
+  ]
+}
+```
+
+
+Repository request_time now represents the database created_at as system_clock::time_point using Unix epoch microseconds for both insertion results and list reads. Neither the HTTP list nor current push exposes request_time; no new wire timestamp field is introduced.
+
+
 ### 12.3 GET `/fetch_unprocessed_friend_request`
 
 No body. Returns pending requests addressed to the authenticated user, ordered by creation time

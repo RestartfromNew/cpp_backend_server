@@ -443,6 +443,29 @@ friend_id 是目标用户 UUID；message 可省略，当前非字符串或空值
 当前非法 UUID 转换在 try 外，可能返回通用 500；不存在的目标可能因外键错误返回 503，并非 404。
 好友申请说明是服务端可读文本，不是端到端加密聊天正文。
 
+申请成功入库后，Handler 尝试调用 push_To_User 通知接收者的在线设备；构造或投递通知抛出异常时只记录日志，仍返回200空响应体，不会把已保存申请改为503。离线或漏收后通过 /fetch_unprocessed_friend_request 补取。推送不代表好友关系已建立，也不使用密文信封ACK。
+
+通知type为friend.request.received，unprocessed_requests为单项数组，字段与待处理申请列表一致：request_id和id为UUID字符串，id表示申请者，message为申请附言。Pool将同一通知分别投递到接收用户每个有在线索引的设备，跨Worker使用原任务队列。客户端按request_id去重/更新，避免推送和列表拉取重复显示；重新上线或漏收时拉取待处理列表。一次通知包含一项，不代表完整列表；它不走chat.envelopes.ack。
+
+```json
+{
+  "type": "friend.request.received",
+  "unprocessed_requests": [
+    {
+      "request_id": "efbd99da-b38f-4ee9-9c70-6a2ef96c2820",
+      "id": "85467846-84e3-4bcb-b3f9-a4f5dd1cd492",
+      "display_name": "Alice",
+      "username": "alice_chat01",
+      "message": "Hi Bob, I am Alice!"
+    }
+  ]
+}
+```
+
+
+Repository 内部的 request_time 已从数据库 created_at 转换为 system_clock::time_point，创建返回和列表读取统一采用Unix纪元微秒，保留数据库时间精度。HTTP列表和当前推送均未输出request_time，不新增客户端时间字段。
+
+
 ### 12.3 GET `/fetch_unprocessed_friend_request`
 
 无需 Body。查询当前用户作为接收者的 pending 申请，按创建时间及申请 ID 倒序。

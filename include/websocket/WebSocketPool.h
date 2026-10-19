@@ -17,6 +17,7 @@
 #include "websocket/WebsocketWorker.h"
 #include <memory>
 #include <vector>
+#include <boost/uuid/uuid.hpp>
 
 #include "http/HttpRequest.h"
 
@@ -28,6 +29,7 @@ struct OnlineConnection {
     std::size_t worker_id;     // 属于哪个 Worker
     int fd;                    // 哪条连接
     std::uint64_t session_id;  // 防止断线后 fd 重用
+    boost::uuids::uuid user_id;
 };
 class WebSocketDispatcher;
 
@@ -40,7 +42,8 @@ class WebSocketPool {
     void close();
     bool forward_connections(PendingWebsocket && request);
     void push_To_Device(const boost::uuids::uuid &device_id,  nlohmann::json);
-    void addIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id);
+    void push_To_User(const boost::uuids::uuid &user_id,  nlohmann::json);
+    void addIndex(const boost::uuids::uuid &device_id,const boost::uuids::uuid &user_id,std::size_t worker_id,int fd,std::uint64_t session_id);
     void removeIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id);
     // HTTP/owner threads only; never wait from a WebSocket worker.
     bool closeSession(const boost::uuids::uuid &user_id,const boost::uuids::uuid &device_id);

@@ -32,17 +32,17 @@ std::optional<User> UserService::findUserByUserName(const std::string& username)
     auto result=repository_.FindUserByUsername(username);
     return result;
 }
-bool UserService::requestFriendship(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& friend_uuid,const std::string& message)
+std::optional<FriendshipRequestRecord> UserService::requestFriendship(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& friend_uuid,const std::string& message)
 {
     try {
-        repository_.CreateNewFriendship(my_uuid,friend_uuid,message);
-        return true;
+        auto result= repository_.CreateNewFriendship(my_uuid,friend_uuid,message);
+        return result;
     }
     catch (const DatabaseError& error) {
         if (error.kind() == DatabaseErrorKind::Query &&
             error.code() == "23505" &&
             error.constraint() == "friend_request_pending_pair_unique") {
-            return false;
+            return std::nullopt;
             } else {
                 throw; // 其他数据库错误继续交给上层处理。
             }

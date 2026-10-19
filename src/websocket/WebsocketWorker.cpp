@@ -498,7 +498,7 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
         websocket_sessions_map.erase(socketFd);
         throw std::system_error(errno,std::generic_category(),"Failed to register WebSocket session");
      }
-    pool_.addIndex(device_id,worker_id_,socketFd,sessionId);
+    pool_.addIndex(device_id,user_id,worker_id_,socketFd,sessionId);
 }
 void WebsocketWorker::handleReadable(int fd) {
     if (revoke_deadlines_.contains(fd)) return;

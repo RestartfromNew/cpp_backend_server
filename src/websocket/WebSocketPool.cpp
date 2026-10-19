@@ -70,10 +70,10 @@ void WebSocketPool::close() {
     std::cout<<"Pool关闭"<<std::endl;
     workersToDestroy.clear();
 }
-void WebSocketPool::addIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id) {
+void WebSocketPool::addIndex(const boost::uuids::uuid &device_id,const boost::uuids::uuid &user_id,std::size_t worker_id,int fd,std::uint64_t session_id) {
     std::lock_guard lock(mutex_);
     if (stopping || !initialized_ || worker_id >= websocket_workers_.size()) return;
-    OnlineConnection connection{worker_id,fd,session_id};
+    OnlineConnection connection{worker_id,fd,session_id,user_id};
     online_connections_.insert_or_assign(device_id, connection);
 }
 void WebSocketPool::removeIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id) {
@@ -102,6 +102,17 @@ void WebSocketPool::push_To_Device(const boost::uuids::uuid &device_id,  nlohman
         return;
 
     websocket_workers_[connection.worker_id]->enqueuePush(connection.fd,connection.session_id,device_id,std::move(message));
+}
+void WebSocketPool::push_To_User(const boost::uuids::uuid& user_id, nlohmann::json message) {
+    std::lock_guard lock(mutex_);
+    if (stopping || !initialized_) return;
+    for (const auto& [deviceId, connection] : online_connections_) {
+        if (connection.user_id == user_id && connection.worker_id < websocket_workers_.size()) {
+            // Copy for each device: moving would empty the next device's notification.
+            websocket_workers_[connection.worker_id]->enqueuePush(
+                connection.fd, connection.session_id, deviceId, message);
+        }
+    }
 }
 bool WebSocketPool::closeSession(const boost::uuids::uuid &user_id,const boost::uuids::uuid &device_id) {
     std::vector<std::future<void>> completions;
