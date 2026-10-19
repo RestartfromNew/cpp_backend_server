@@ -6,12 +6,13 @@
 #define CPP_BACKEND_SERVER_CHATHANDLER_H
 
 #include "service/KeyService.h"
+#include "service/LoginTicketService.h"
 #include "http/HttpRequest.h"
 #include "http/HttpResponse.h"
 class ChatHandler {
 public:
-    explicit ChatHandler(KeyService& keyService);
-    HttpResponse registerNewDevice(const HttpRequest& request,const boost::uuids::uuid&);
+    ChatHandler(KeyService& keyService, LoginTicketService& tickets);
+    HttpResponse registerNewDevice(const HttpRequest& request);
 
     HttpResponse uploadOneTimePrekeys(const HttpRequest& request,
         const boost::uuids::uuid& user_id);
@@ -23,6 +24,7 @@ public:
         const boost::uuids::uuid& user_id);
     private:
     KeyService& keyService_;
+    LoginTicketService& tickets_;
 };
 
 

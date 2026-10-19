@@ -23,10 +23,11 @@
 #include "websocket/WebSocketPool.h"
 
 
+class LoginTicketService;
 class UserHandler {
 public:
     explicit UserHandler(UserService& userService,RegisterService& registerService,
-        LoginService& loginService,KeyService& keyService,WebSocketPool& webSocketPool);
+        LoginService& loginService,KeyService& keyService,WebSocketPool& webSocketPool, LoginTicketService& tickets);
     HttpResponse getUser(const HttpRequest& request);
     HttpResponse Register(const HttpRequest& request);
     HttpResponse LoginByEmail(const HttpRequest& request);
@@ -38,6 +39,7 @@ public:
         const boost::uuids::uuid& my_uuid);
     HttpResponse verifyaccess(const HttpRequest& request);
     HttpResponse RevokeDevice(const HttpRequest& request,const boost::uuids::uuid& my_uuid);
+    HttpResponse DeviceVerification(const HttpRequest& request);
 
 
 private:
@@ -49,6 +51,7 @@ private:
     LoginService & loginService_;
     KeyService& keyService_;
     WebSocketPool &webSocketPool_;
+    LoginTicketService& tickets_;
 
 };
 

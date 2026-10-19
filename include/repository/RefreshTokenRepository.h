@@ -32,8 +32,13 @@ class RefreshTokenRepository {
     explicit RefreshTokenRepository(DatabasePool &databasePool);
     //查
     std::optional<RefreshTokenResult> getRefreshTokenRecord(const std::string &refreshToken_hash);
+    // Uses the caller's connection/transaction; does not lease or commit.
+    static void insertRefreshToken(DatabaseConnection& connection,
+        const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id,
+        const std::string& refreshToken_hash);
     //增
-    void insertRefreshToken(const boost::uuids::uuid& userId,const std::string& refreshToken_hash,TimePoint expiresAt);
+
+
     //改 标记为失效
     void revokeRefreshToken(const std::string &refreshToken_hash);
     //删

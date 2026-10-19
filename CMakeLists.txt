@@ -14,6 +14,8 @@ pkg_check_modules(SODIUM REQUIRED libsodium)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 add_executable(cpp_backend_server src/main.cpp
+        src/repository/LoginTicketRepository.cpp
+        src/service/LoginTicketService.cpp
         src/server/TcpServer.cpp
         include/server/TcpServer.h
         src/databases/DatabaseConnection.cpp
@@ -81,8 +83,8 @@ add_executable(cpp_backend_server src/main.cpp
         include/websocket/WebSocketHandler.h
         src/service/ChatService.cpp
         include/service/ChatService.h
-        src/websocket/webSocketDispatcher.cpp
-        include/websocket/webSocketDispatcher.h
+        src/websocket/WebSocketDispatcher.cpp
+        include/websocket/WebSocketDispatcher.h
         include/domain/FriendshipRequestRecord.h
         src/repository/KeyRepository.cpp
         include/repository/KeyRepository.h
@@ -229,4 +231,18 @@ add_test(
 set_tests_properties(database_pool_smoke PROPERTIES
         TIMEOUT 20
 )
+
+
+add_executable(login_ticket_isolated_test
+    tests/login_ticket_isolated/test.cpp
+    src/repository/LoginTicketRepository.cpp
+    src/service/LoginTicketService.cpp
+    src/service/LoginService.cpp)
+target_include_directories(login_ticket_isolated_test PRIVATE
+    tests/login_ticket_isolated/fakes
+    tests/message_storage_isolated/fakes
+    include)
+target_link_libraries(login_ticket_isolated_test PRIVATE Threads::Threads)
+add_test(NAME login_ticket_isolated COMMAND login_ticket_isolated_test)
+set_tests_properties(login_ticket_isolated PROPERTIES TIMEOUT 20)
 

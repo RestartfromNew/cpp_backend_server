@@ -6,7 +6,12 @@
 #define CPP_BACKEND_SERVER_USERSERVICE_H
 #include <variant>
 
+
+#include "Auth/RefreshTokenService.h"
+#include "Auth/AccessTokenService.h"
 #include "repository/UserRepository.h"
+class RefreshTokenService;
+
 enum class UserServiceErrorCode {
     UserNotFound,
     CannotAddSelf,
@@ -14,14 +19,23 @@ enum class UserServiceErrorCode {
     RevokedDevice,
     NotYourDevice,
     DeviceNotFound,
-    DeviceNotActive
+    DeviceNotActive,
+    NoSuchDevice,
+    NotActivated,
+
+};
+struct TokenPairs {
+    std::string access_token;
+    std::string refresh_token;
 };
 
 class UserService {
 public:
     explicit UserService(
         UserRepository& repository,
-        RefreshTokenRepository& refresh_token_repository
+        RefreshTokenRepository& refresh_token_repository,
+        AccessTokenService& access_token_service,
+        RefreshTokenService& refresh_token_service
     );
 
     std::optional<User> findUserByEmail(const std::string& email);
@@ -32,10 +46,15 @@ public:
     FriendRequestProcessResult processFriendshipRequest(const boost::uuids::uuid& my_uuid,
         const boost::uuids::uuid& request_id, const std::string& process);
     std::variant<bool,UserServiceErrorCode> revokeUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id,const std::string &password);
+    std::variant<bool,UserServiceErrorCode> verifyUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id);
+
+
 
 private:
     bool verifyPassword( const std::string &password_hash, const std::string &password );
     UserRepository& repository_;
+    AccessTokenService &accessTokenService_;
+    RefreshTokenService &refreshTokenService_;
     RefreshTokenRepository refresh_token_repository_;
 };
 

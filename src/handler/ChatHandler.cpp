@@ -3,6 +3,7 @@
 //
 
 #include "handler/ChatHandler.h"
+#include "handler/LoginTicketResponse.h"
 #include "databases/DatabaseError.h"
 #include "nlohmann/json.hpp"
 
@@ -67,10 +68,10 @@ bool isHexOfSize(std::string_view text, std::size_t byteCount) {
 }
 }
 
-ChatHandler::ChatHandler(KeyService& keyService) : keyService_(keyService) {}
+ChatHandler::ChatHandler(KeyService& keyService, LoginTicketService& tickets) : keyService_(keyService), tickets_(tickets) {}
 
 HttpResponse ChatHandler::registerNewDevice(
-    const HttpRequest& request, const boost::uuids::uuid& user_id) {
+    const HttpRequest& request) {
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
@@ -81,6 +82,9 @@ HttpResponse ChatHandler::registerNewDevice(
             "invalid_json", "Request body must be a valid JSON object");
     }
 
+    const auto ticket = body.find("login_ticket");
+    if (ticket == body.end() || !ticket->is_string() || ticket->get_ref<const std::string&>().empty())
+        return ErrorResponseMaker(HttpStatus::Unauthorized, "invalid_login_ticket", "Login ticket is required");
     const char* requiredFields[] = {
         "identity_public_key_hex", "device_name", "protocol_suite",
         "signed_prekey_id", "signed_prekey_public_hex",
@@ -135,17 +139,9 @@ HttpResponse ChatHandler::registerNewDevice(
     }
 
     try {
-        // The authenticated route supplies user_id; never use a body-supplied ID.
-        const auto deviceId = keyService_.registerNewDevice(
-            user_id, identityKey, deviceName, protocolSuite,
-            prekeyId, prekeyPublic, prekeySignature);
-        HttpResponse response;
-        response.status = HttpStatus::Created;
-        response.headers["Content-Type"] = "application/json";
-        response.body = nlohmann::json{
-            {"device_id", deviceId}, {"device_status", "active"}
-        }.dump();
-        return response;
+        DeviceRegistrationInput input{identityKey, deviceName, protocolSuite,
+            prekeyId, prekeyPublic, prekeySignature};
+        return loginTicketResponse(tickets_.registerDevice(ticket->get_ref<const std::string&>(), input), true);
     } catch (const DatabaseError& error) {
         std::cerr << "[registerNewDevice] database failure; SQLSTATE="
                   << error.code() << '\n';

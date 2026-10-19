@@ -107,25 +107,7 @@ std::optional<User> UserRepository::findByEmail(const std::string& email)
         .display_name = std::string{result.value(0, 1)},
     };
 }
-void UserRepository::InsertRefreshToken(const boost::uuids::uuid &id,std::string &refreshToken_hash) {
-    const std::string refresh_Parameters[] = {boost::uuids::to_string(id),refreshToken_hash};
-    ConnectionLease lease(databasePool_);
-    auto result=lease.connection().execute(
-    R"(
-        INSERT INTO app.refresh_tokens (
-            user_id,
-            token_hash,
-            expires_at
-        )
-        VALUES (
-            $1,
-            $2,
-            CURRENT_TIMESTAMP + INTERVAL '7 days'
-        )
-    )",
-    refresh_Parameters);
 
-}
 std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name,const std::string &username) {
     ConnectionLease lease(databasePool_);
 
@@ -217,6 +199,10 @@ RevokeDeviceResult UserRepository::revokeUserDevice(
         if (updated.rowCount() != 1) {
             throw std::logic_error("Locked device was not revoked");
         }
+        auto tokens = lease.connection().execute(R"(
+            UPDATE app.refresh_tokens SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
+            WHERE device_id = $1::uuid
+        )", parameters);
         // Preserve historical keys/envelopes. Device status controls access.
         return RevokeDeviceResult::Success;
     }); // Commit before success; database failures propagate.

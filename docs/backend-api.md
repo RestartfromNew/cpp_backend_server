@@ -12,7 +12,7 @@ English version: [Backend API Documentation](backend-api.en.md)。
 | --- | --- | --- |
 | 域名入口（本文默认） | `https://aittelegramapi.uk` | 用户已配置的 HTTPS 域名；本次未在线核验 DNS、证书或代理配置 |
 | Windows 本地通过 Nginx 访问 WSL | `http://localhost:8088` | 保留为本地调试入口，不是公网客户端应使用的地址 |
-| 直接访问 C++ 服务 | `http://localhost:8082` | 当前 main 实际监听 `0.0.0.0:8082`；启动日志可能仍显示旧端口 8081 |
+| 直接访问 C++ 服务 | `http://localhost:8082` | 当前源码监听 `0.0.0.0:8082`；systemd部署副本的实际端口以部署二进制/配置为准 |
 
 以下接口路径拼接在基础地址之后，例如 `https://aittelegramapi.uk/login_by_email`。当前代码没有 `/api` 或 `/v1` 前缀。基础地址不包含 `/login_by_email`；该部分是登录接口路径。原有认证示例使用域名入口，第 12 节的 PowerShell 好友示例使用本地 8082 端口。
 
@@ -20,7 +20,7 @@ English version: [Backend API Documentation](backend-api.en.md)。
 - 字段名区分大小写；额外 JSON 字段目前被忽略。
 - 路由按方法和路径精确匹配。多一个结尾 `/` 或附带查询字符串，可能导致匹配失败；当前没有独立解析 query 参数。
 - 未匹配到方法和路径时返回 404，当前未区分 405 Method Not Allowed。
-- 后端每次响应后关闭连接，响应带 `Connection: close`；Nginx 到客户端的连接策略可能不同。
+- 普通HTTP接口每次响应后关闭连接，响应带 `Connection: close`；Nginx 到客户端的连接策略可能不同。
 - 带请求体的请求应提供正确的 `Content-Length`，curl 会自动生成。当前解析器没有实现 chunked 请求体。
 - 后端请求体长度上限为 1,048,576 字节；超限目前返回 400，不是 413。代理也可能在进入后端前拒绝请求。
 
@@ -39,11 +39,12 @@ X-User-Email: alice@example.com
 
 ## 2. 接口总览
 
-| 方法 | 路径 | Access Token | 当前用途 |
+| 方法 | 路径 | 认证方式 | 当前用途 |
 | --- | --- | --- | --- |
 | POST | `/register_by_email` | 不需要 | 邮箱密码注册 |
-| POST | `/login_by_email` | 不需要 | 邮箱密码登录并签发两种 Token |
-| POST | `/register_device` | 必须 | 登记设备及带签名预密钥 |
+| POST | `/login_by_email` | 不需要 | 验证密码并签发一次性login_ticket |
+| POST | `/register_device` | login_ticket | 登记设备并完成登录 |
+| POST | `/device_verification` | login_ticket | 验证已有设备并完成登录 |
 | POST | `/revoke_device` | 必须 | 密码确认后撤销本人设备；支持重复请求 |
 | POST | `/upload_one_time_prekeys` | 必须 | 上传 1～10 个设备一次性公钥 |
 | POST | `/get_one_time_prekey` | 必须 | 领取好友设备的一次性预密钥 |
@@ -59,6 +60,8 @@ X-User-Email: alice@example.com
 | POST | `/process_friendship_request` | 必须 | 接受、拒绝或取消申请 |
 | GET | `/fetch_friends` | 必须 | 拉取当前用户的好友列表，无需 Body |
 
+表中“必须”指Authorization中的正式Access Token；login_ticket表示JSON请求体认证，不能用普通Bearer Token替代。
+
 注意：`/refresh_token` 当前确实注册为 GET，且要求 JSON 请求体。本文忠实记录此行为，不代表推荐这样设计；后续应改为 POST。
 
 ## 3. 通用错误格式
@@ -68,17 +71,17 @@ X-User-Email: alice@example.com
 ```json
 {
   "error": {
-    "code": "invalid_credentials",
-    "message": "Email or password is incorrect"
+    "code": "device_not_owned",
+    "message": "Device does not belong to this login"
   }
 }
 ```
 
-客户端根据 HTTP 状态码和 `error.code` 判断，不应依赖英文 message 的大小写或措辞。
+客户端根据 HTTP 状态码和 `error.code` 判断，不应依赖英文 message 的大小写或措辞。 密码登录例外：读取顶层code；客户端可使用error?.code或code统一分支，但不要假定所有失败都有message。
 
 ### 请求体通用错误
 
-以下错误适用于注册、登录、刷新三个要求 JSON 请求体的接口。
+以下错误码适用于要求JSON请求体的接口，但结构有区别：/login_by_email在Handler中统一返回顶层code，不含error/message；其他接口通常返回error.code/message。HTTP解析器在进入Handler前产生的错误仍是通用error对象。
 
 | HTTP 状态 | code | message | 条件 |
 | --- | --- | --- | --- |
@@ -162,50 +165,43 @@ X-User-Email: alice@example.com
 
 多个字段同时错误时，只返回首先检查到的一个错误。重复邮箱映射依赖数据库错误码 `23505` 和约束名称 `password_credentials_login_email_unique`，数据库结构必须与代码一致。
 
-## 5. 邮箱密码登录
+## 5. 邮箱密码登录：取得一次性 login_ticket
 
 ### POST `/login_by_email`
 
-无需 Access Token。
+公开接口，不需要Authorization。请求只需email、password；旧device_id字段不参与登录校验。注册账号不会签发ticket，注册成功后仍须调用本接口。
 
 ```json
-{
-  "email": "alice@example.com",
-  "password": "TestPass123!"
-}
+{"email":"amy_chat01@example.com","password":"TestPass123@"}
 ```
 
-两个字段都必须为非空字符串。邮箱去除首尾普通空格并转小写；密码当前也去除首尾普通空格。登录不重新执行注册时的密码复杂度校验，而是验证保存的密码哈希。
+| 字段 | 规则 |
+|---|---|
+| email | 非空字符串，沿用现有trim和小写规范化 |
+| password | 非空字符串，当前仍沿用conversionInput处理，不在本次文档更新中改变密码规范化 |
 
-### 成功响应：200 OK
+成功200：
 
 ```json
-{
-  "id": "33e76cf5-fc26-4fff-9f88-d08690ffb863",
-  "display_name": "Alice",
-  "access_token": "ACCESS_TOKEN",
-  "refresh_token": "REFRESH_TOKEN",
-  "username": "alice_chat01"
-}
+{"code":"login_success","login_ticket":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","expires_in":300}
 ```
 
-示例中的 Token 是占位符，不可用于验证。响应没有 `expires_in` 或 `token_type` 字段。
+ticket示例仅说明64个小写hex字符的格式，不是可用凭据。客户端必须使用本次响应中的真实值。expires_in单位为秒，期限由数据库签发时刻决定，不会因客户端收到较晚而顺延。成功响应不包含正式Token、用户ID、username或device_status。
 
-- Access Token：JWT，当前有效期 15 分钟；算法 HS256，issuer 为 `cpp_backend_server`，audience 为 `cpp_backend_api`，subject 为用户 UUID。
-- Refresh Token：32 字节随机数据编码为 Base64URL 文本；当前数据库过期时间为插入时起 7 天。
-- 数据库存储 Refresh Token 的 BLAKE2b 哈希，不存储明文。客户端收到的明文用于之后提交刷新请求。
-- 同一用户每次成功登录都会插入新的 Refresh Token 记录，当前没有只允许一个会话的限制。
+| HTTP | code | 条件 |
+|---|---|---|
+| 400 | missing_request_body | 空请求体 |
+| 400 | invalid_json | 非法JSON或非对象 |
+| 400 | missing_register_email | email缺失、非字符串或空；保留旧错误码拼写 |
+| 400 | missing_register_password | password缺失、非字符串或空 |
+| 401 | invalid_credentials | 账号不存在或密码不匹配，统一处理 |
+| 403 | account_disabled | 账号无效，或签发ticket前复查账号失败 |
+| 503 | service_unavailable | 数据库连接故障 |
+| 500 | internal_error | 其他SQL、约束、转换或内部处理失败 |
 
-### 业务错误
+所有上述Handler失败只有顶层code，例如 `{"code":"internal_error"}`，不是error对象。该500证明已到登录Handler，不等于路径错，也不等于密码错误；新增ticket表缺失/权限不足的排查见22节。TooManyRequests枚举尚无实际限流实现，不能据此假定登录已有频率保护。
 
-| HTTP 状态 | code | 条件 |
-| --- | --- | --- |
-| 400 | `missing_register_email` | email 缺失、非字符串或为空；当前复用了注册错误码 |
-| 400 | `missing_register_password` | password 缺失、非字符串或为空；当前复用了注册错误码 |
-| 401 | `invalid_credentials` | 用户不存在或密码错误，统一提示 |
-| 403 | `account_disabled` | 密码正确，但用户 is_active 为 false |
-
-Handler 还定义了 `internal_error`（500）和 `service_unavailable`（503）的业务分支，但当前 LoginService 不主动返回这两个枚举；实际数据库异常主要由 HttpSession 按通用错误映射处理。
+已有设备下一步POST /device_verification；新设备下一步POST /register_device，两者均提交login_ticket。ticket不能当作Access Token或Refresh Token，也不能建立WebSocket连接。完整设备登录见21节。
 
 ## 6. 验证 Access Token
 
@@ -253,7 +249,7 @@ Content-Length: 0
 }
 ```
 
-注意输入是驼峰字段 `refreshToken`，不是登录响应里的 `refresh_token`。不能把数据库保存的哈希当成 Token 提交，也不用提交 user_id。
+注意输入是驼峰字段 `refreshToken`，不是设备登录完成响应里的 `refresh_token`。不能把数据库保存的哈希当成 Token 提交，也不用提交 user_id。
 
 服务端对明文计算相同哈希，用哈希找到唯一记录，然后检查撤销和过期状态，并从该记录取得 user_id。
 
@@ -284,6 +280,8 @@ Content-Length: 0
 
 GET 请求体不适合普通浏览器前端调用；迁移到 POST 后，应同步修改 main 的路由注册、客户端请求和本文。不要在尚未改代码时直接使用 POST，也不要为了绕过 GET 请求体把 Token 放到 URL 查询参数里。
 
+RefreshTokenRepository查询现在JOIN user_devices和users，要求Token绑定设备属于该用户、设备active且账号有效；不满足时表现为401 invalid_refreshToken。Token仍是数据库保存哈希、客户端提交原文；没有把login_ticket当刷新凭据，也没有刷新时延长有效期或轮换Token。Refresh响应不包含device_id，客户端保留完成设备登录时保存的device_id。
+
 ## 8. 旧版查询用户接口
 
 ### GET `/user`
@@ -305,57 +303,48 @@ X-User-Email: alice@example.com
 
 目前 Repository 仍执行 `SELECT id, username, email FROM users WHERE email = $1`，与新的 `app.users` / `app.password_credentials` 结构不一致，实际结果还受数据库 search_path 和是否保留旧表影响。
 
-此外，这里直接把 UUID 对象赋给 JSON，没有像注册/登录一样显式转换成字符串；不要依赖其 id 字段已有统一的字符串格式。该接口尚不适合作为正式用户资料接口，本文不提供稳定的成功响应契约。
+此外，这里直接把 UUID 对象赋给 JSON，没有像注册/设备登录完成响应一样显式转换成字符串；不要依赖其 id 字段已有统一的字符串格式。该接口尚不适合作为正式用户资料接口，本文不提供稳定的成功响应契约。
 
-## 9. Windows Terminal 联调命令
+## 9. Windows PowerShell：完成已有设备登录
 
-以下命令用于 Windows Terminal 中的 **CMD（命令提示符）**，不是 PowerShell。邮箱若已注册，请更换测试编号。不要将真实密码或 Token 复制到公开日志。
+以下是PowerShell代码，不是CMD命令。baseUrl必须为纯URL字符串，不能写成Markdown链接 `[http://localhost:8082](...)`。先替换账号和该账号已有active设备；首次使用没有device_id时，不要执行设备验证，按13节登记新设备。
 
-### 9.1 注册
+```powershell
+$ErrorActionPreference = 'Stop'
+$baseUrl = 'http://localhost:8082'
 
-```bat
-curl.exe -i "https://aittelegramapi.uk/register_by_email" -H "Content-Type: application/json" --data-raw "{\"email\":\"api_test01@example.com\",\"password\":\"TestPass123!\",\"display_name\":\"ApiTest01\",\"username\":\"api_test01\"}"
+# Existing active device of this account; replace before executing.
+$deviceId = 'f7ab7d41-9955-4a73-922d-7b7a80ebdac4'
+$password = [System.Net.NetworkCredential]::new('', (Read-Host 'Password' -AsSecureString)).Password
+
+$loginBody = @{ email = 'alice_chat01@example.com'; password = $password } | ConvertTo-Json -Compress
+$loginArgs = @{
+    Method = 'Post'; Uri = "$baseUrl/login_by_email"
+    ContentType = 'application/json; charset=utf-8'
+    Body = [System.Text.Encoding]::UTF8.GetBytes($loginBody)
+    TimeoutSec = 20; ErrorAction = 'Stop'
+}
+$login = Invoke-RestMethod @loginArgs
+if ($login.code -ne 'login_success' -or -not $login.login_ticket) { throw 'Password login did not issue a ticket' }
+
+$verifyBody = @{ login_ticket = $login.login_ticket; device_id = $deviceId } | ConvertTo-Json -Compress
+$verifyArgs = @{
+    Method = 'Post'; Uri = "$baseUrl/device_verification"
+    ContentType = 'application/json; charset=utf-8'
+    Body = [System.Text.Encoding]::UTF8.GetBytes($verifyBody)
+    TimeoutSec = 20; ErrorAction = 'Stop'
+}
+$verified = Invoke-RestMethod @verifyArgs
+if (-not $verified.access_token -or -not $verified.refresh_token) { throw 'Device login did not issue tokens' }
+$accessToken = $verified.access_token
+$refreshToken = $verified.refresh_token
+$userId = $verified.id
+$deviceId = $verified.device_id
+Write-Host "Login complete: user=$userId device=$deviceId"
+# Do not log the credential objects in normal client code.
 ```
 
-预期：首次注册 201，重复注册在数据库约束匹配时为 409。
-
-### 9.2 登录
-
-```bat
-curl.exe -i "https://aittelegramapi.uk/login_by_email" -H "Content-Type: application/json" --data-raw "{\"email\":\"api_test01@example.com\",\"password\":\"TestPass123!\"}"
-```
-
-预期：200；复制响应中两种 Token 的值，不要复制字段名或包围它们的双引号。
-
-### 9.3 设置本地 CMD 变量并验证 Access Token
-
-```bat
-set "ACCESS_TOKEN=替换为登录返回的access_token"
-set "REFRESH_TOKEN=替换为登录返回的refresh_token"
-curl.exe -i -X POST "https://aittelegramapi.uk/verify_access_token" -H "authorization: Bearer %ACCESS_TOKEN%" -H "Content-Length: 0"
-```
-
-预期：200，当前成功响应体为空。
-
-### 9.4 获取新的 Access Token
-
-```bat
-curl.exe -i -X GET "https://aittelegramapi.uk/refresh_token" -H "Content-Type: application/json" --data-raw "{\"refreshToken\":\"%REFRESH_TOKEN%\"}"
-```
-
-预期：200，响应带新的 access_token 和原 refresh_token。要测试新的 Access Token，请手动更新 ACCESS_TOKEN 变量后再执行验证命令。
-
-### 9.5 错误分支
-
-```bat
-curl.exe -i -X POST "https://aittelegramapi.uk/verify_access_token" -H "Content-Length: 0"
-curl.exe -i -X POST "https://aittelegramapi.uk/verify_access_token" -H "authorization: Bearer invalid-token" -H "Content-Length: 0"
-curl.exe -i "https://aittelegramapi.uk/login_by_email" -H "Content-Type: application/json" --data-raw "{\"email\":\"api_test01@example.com\",\"password\":\"WrongPass123!\"}"
-curl.exe -i "https://aittelegramapi.uk/register_by_email" -H "Content-Type: application/json" --data-raw "{}"
-curl.exe -i -X GET "https://aittelegramapi.uk/refresh_token" -H "Content-Type: application/json" --data-raw "{\"refreshToken\":\"invalid-token\"}"
-```
-
-依次预期：401、401、401、400、401。前提是请求正常到达后端且数据库可用。
+新设备：先执行上面登录部分，然后用同一ticket和13节的公开密钥字段POST /register_device。成功后使用其响应的id/device_id/access_token/refresh_token。只有密码登录成功不会产生Refresh Token记录。
 
 ## 10. 当前边界与后续修改清单
 
@@ -366,7 +355,7 @@ curl.exe -i -X GET "https://aittelegramapi.uk/refresh_token" -H "Content-Type: a
 3. 将刷新接口改为 POST，并统一 refresh_token 字段和错误码命名。
 4. 正确区分 JWT 过期与其他验证错误；测试过期分支。
 5. 停止修改用户输入的密码（当前会 trim）；制定已有账号兼容策略再修改。
-6. 明确用户禁用后现存 Token 的处理策略；当前登录检查 is_active，但 Access 验证和刷新没有同样的检查。
+6. 明确用户禁用后现存 Token 的处理策略；当前登录和Refresh查询检查账号有效性，Refresh查询还检查设备归属及active；单纯Access Token签名验证不查询数据库，仍需区分各业务接口。
 7. 修复或下线旧 `/user`；正式用户接口应考虑鉴权和统一 UUID 序列化。
 8. 本文没有把 Refresh Token 轮换、退出登录、全部设备退出、第三方登录、邮箱验证、自动 Token 清理、限流、CORS 预检写成可用接口：当前 main 未提供这些对应入口或完整链路。Repository 中有函数不等于 HTTP 功能已经接通。
 
@@ -385,7 +374,11 @@ curl.exe -i -X GET "https://aittelegramapi.uk/refresh_token" -H "Content-Type: a
 | Refresh Token 生成、哈希和有效性校验 | [RefreshTokenService.cpp](../src/Auth/RefreshTokenService.cpp) |
 | 注册校验规则 | [RegisterService.cpp](../src/service/RegisterService.cpp) |
 | 登录流程 | [LoginService.cpp](../src/service/LoginService.cpp) |
-| 用户 SQL 和登录时 Refresh Token 的有效期 | [UserRepository.cpp](../src/repository/UserRepository.cpp) |
+| 用户查询、好友及设备撤销 | [UserRepository.cpp](../src/repository/UserRepository.cpp) |
+| ticket生成与最终Token签发 | [LoginTicketService.cpp](../src/service/LoginTicketService.cpp) |
+| ticket持久化与一次性消费事务 | [LoginTicketRepository.cpp](../src/repository/LoginTicketRepository.cpp) |
+| Refresh Token插入、查询与有效期 | [RefreshTokenRepository.cpp](../src/repository/RefreshTokenRepository.cpp) |
+| 完成登录的响应与错误映射 | [LoginTicketResponse.h](../include/handler/LoginTicketResponse.h) |
 | HTTP 请求解析 | [HttpParse.cpp](../src/http/HttpParse.cpp) |
 | 通用异常到 HTTP 错误的转换 | [HttpSession.cpp](../src/http/HttpSession.cpp) |
 
@@ -571,7 +564,11 @@ $login = Invoke-RestMethod -Method Post `
     -Uri "http://localhost:8082/login_by_email" `
     -ContentType "application/json" -Body $loginBody
 
-$bobToken = $login.access_token
+$verified = Invoke-RestMethod -Method Post -Uri 'http://localhost:8082/device_verification' -ContentType 'application/json' -Body (@{
+    login_ticket = $login.login_ticket
+    device_id = '6b73d84c-f23f-4932-8b4c-d320913914e3'
+} | ConvertTo-Json -Compress)
+$bobToken = $verified.access_token
 
 # 拉取待处理申请，复制所需的 request_id
 Invoke-RestMethod -Method Get `
@@ -601,77 +598,51 @@ Invoke-RestMethod -Method Get `
 无 token 返回 401、不能通过 Body 读取他人列表、重复接受不产生重复关系。
 
 
-## 13. 登记新设备
+## 13. 使用登录凭据登记新设备
 
 ### POST `/register_device`
 
-需要 `authorization: Bearer ACCESS_TOKEN`，用户 ID 由认证结果提供，请求无需 user_id。此接口调用 ChatHandler → KeyService → KeyRepository，在同一数据库事务插入 app.user_devices 和 app.device_key_bundles；任一插入失败回滚。当前新设备直接 active，不提供恢复 revoked 设备的功能。
+请求体携带login_ticket，不再凭普通Bearer Token登记。用户由ticket记录确定，body.user_id即使提供也不参与身份判断。
 
 ```json
 {
-  "device_name": "Alice手机",
+  "login_ticket": "64_LOWERCASE_HEX_CHARACTERS",
+  "device_name": "Alice phone",
   "protocol_suite": "TEST-X25519-XEdDSA-HKDF-SHA256-v1",
-  "identity_public_key_hex": "替换为64个hex字符",
+  "identity_public_key_hex": "64_HEX_CHARACTERS",
   "signed_prekey_id": "42",
-  "signed_prekey_public_hex": "替换为64个hex字符",
-  "signed_prekey_signature_hex": "替换为128个hex字符"
+  "signed_prekey_public_hex": "64_HEX_CHARACTERS",
+  "signed_prekey_signature_hex": "128_HEX_CHARACTERS"
 }
 ```
 
-公钥和签名示例值是占位符，不可直接发送。
+示例公钥/签名为占位符。原字段校验保留：公钥32字节hex，签名64字节hex；signed_prekey_id为非负BIGINT十进制字符串；设备名和协议不能为空白。这里只验证编码长度，不代表完成密码学签名验证。
 
-| 字段 | 类型 | 校验 |
-|---|---|---|
-| device_name | string | 必填，非空且不能全为空白 |
-| protocol_suite | string | 必填，非空且不能全为空白；目前没有协议白名单或协商 |
-| identity_public_key_hex | string | 必填，32 字节公钥，即 64 个 hex 字符，无 0x/\x 前缀 |
-| signed_prekey_id | string | 必填，0～9223372036854775807 的十进制数字字符串，例如 "42"；JSON 数字 42 不接受 |
-| signed_prekey_public_hex | string | 必填，32 字节，即 64 个 hex 字符 |
-| signed_prekey_signature_hex | string | 必填，64 字节，即 128 个 hex 字符 |
-
-成功返回 `201 Created`：
+同一事务锁定并消费ticket、插入active设备与初始bundle、写入绑定设备的Refresh Token；任一步失败全部回滚。成功返回201：
 
 ```json
 {
-  "device_id": "1204404a-4fd1-4419-8c87-99583872faa2",
-  "device_status": "active"
+  "id": "85467846-84e3-4bcb-b3f9-a4f5dd1cd492",
+  "device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4",
+  "device_status": "active",
+  "access_token": "ACCESS_TOKEN",
+  "refresh_token": "REFRESH_TOKEN"
 }
 ```
 
-响应 device_id 是实际新 UUID。客户端保存它，并在后续登录中提交。新设备 key_version=1，is_current=true，signed_prekey_id 来自请求，expires_at 暂为空。数据库公钥通过 decode(hex,'hex') 存入 BYTEA。
+| 请求字段 | 类型与规则 |
+|---|---|
+| login_ticket | 非空字符串；真正消费前要求64个小写hex字符，且存在、未用、未过期 |
+| device_name | 非空、非全空白字符串 |
+| protocol_suite | 非空、非全空白字符串；尚无协议白名单 |
+| identity_public_key_hex | 32字节公钥的64个hex字符，无前缀 |
+| signed_prekey_id | 0至9223372036854775807的十进制字符串；不接受JSON数字 |
+| signed_prekey_public_hex | 32字节公钥的64个hex字符 |
+| signed_prekey_signature_hex | 64字节签名的128个hex字符 |
 
-| HTTP | code | 条件 |
-|---|---|---|
-| 400 | missing_request_body | 请求体为空 |
-| 400 | invalid_json | JSON 无效，或顶层不是对象 |
-| 400 | invalid_device_name / invalid_protocol_suite | 相应字段缺失、非字符串、空或全为空白 |
-| 400 | invalid_identity_public_key_hex / invalid_signed_prekey_public_hex / invalid_signed_prekey_signature_hex | 相应字段缺失、类型错误、空、长度或 hex 格式错误 |
-| 400 | invalid_signed_prekey_id | 缺失、非字符串、空、非十进制或超出非负 BIGINT 范围 |
-| 401 | invalid_access_token / access_token_expired | Router 的现有认证错误，未调用登记 Handler |
-| 503 | database_unavailable | DatabaseErrorKind::Connection |
-| 500 | register_device_failed | 其他数据库错误或意外异常；响应不泄露 SQL/公钥材料 |
+原字段的400错误使用invalid_字段名，例如invalid_signed_prekey_id。缺失/错误类型/空ticket为401 invalid_login_ticket；有ticket但公钥字段格式错误时，可能先返回400，而不进入ticket数据库校验。登记返回500 register_device_failed包含事务冲突等非连接错误，不等同于设备验证接口的503 retry_later映射。
 
-Windows PowerShell 示例：从此前生成的 A1 公钥包构造请求。修改文件路径与 token；当前 body.user_id 即使提供也不用于选择用户。应使用与该客户端一致的密钥，并在成功后将服务器返回的 UUID 更新到客户端存储。
-
-```powershell
-$accessToken = '替换为Alice登录返回的access_token'
-$bundle = Get-Content -LiteralPath 'C:\Users\yangb\Documents\Codex\2026-10-06\xian\outputs\test_keys\public_bundles\A1.json' -Raw | ConvertFrom-Json
-$body = @{
-    device_name = 'Alice手机'
-    protocol_suite = $bundle.protocol_suite
-    identity_public_key_hex = $bundle.identity_public_key_hex
-    signed_prekey_id = [string]$bundle.signed_prekey.key_id
-    signed_prekey_public_hex = $bundle.signed_prekey.public_key_hex
-    signed_prekey_signature_hex = $bundle.signed_prekey.signature_hex
-} | ConvertTo-Json -Compress
-
-Invoke-RestMethod -Method Post -Uri 'http://localhost:8082/register_device' -Headers @{ authorization = "Bearer $accessToken" } -ContentType 'application/json' -Body $body
-```
-
-当前范围：只登记设备和带签名预密钥，不写入一次性预密钥库存，不生成信封，不建立客户端加密会话。仅校验公钥/签名的 hex 编码和长度，Service 未做密码学签名验证，也未验证公钥安全性；不能把 active 当成上述检查已完成的证明。认证中间件目前仅检查用户 Token，账号停用后的 Token 策略沿用现有实现。
-
-本接口尚未提供 registration_id 幂等机制；重发请求可能创建多个设备。没有执行生产数据库请求；完整服务器编译和真实数据库联调结果需另行验证。
-
+不再仅返回device_id。客户端保存新设备ID及正式Token，然后上传一次性预密钥并连接WebSocket。一次ticket只能完成登记或验证之一；重放返回401 invalid_login_ticket，不会重复登记。新ticket重试登记仍可能新增设备，客户端需明确处理响应丢失。错误及部署要求见21节。
 
 ### 14. 上传一次性预密钥
 
@@ -758,13 +729,13 @@ target_user_id（兼容 friend_id）是目标用户 UUID；device_id 必须是�
 | 503 | database_unavailable | 数据库连接不可用 |
 | 500 | claim_prekey_failed | 其他内部错误 |
 
-Windows PowerShell 示例：使用 Alice 登录返回的 $login.access_token，领取 Bob 的设备预密钥。
+Windows PowerShell 示例：使用 Alice 设备验证/登记完成返回的 $verified.access_token，领取 Bob 的设备预密钥。
 ```powershell
 $claimBody = @{
     friend_id = "3755178b-3b3d-4cf4-9e61-0aba62fb2875"
     device_id = "6b73d84c-f23f-4932-8b4c-d320913914e3"
 } | ConvertTo-Json -Compress
-Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_one_time_prekey" -Headers @{ authorization = "Bearer $($login.access_token)" } -ContentType "application/json" -Body $claimBody
+Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_one_time_prekey" -Headers @{ authorization = "Bearer $($verified.access_token)" } -ContentType "application/json" -Body $claimBody
 ```
 
 示例 friend_id 须替换成好友列表实际返回的账号 UUID（测试密钥文件中的账号编号不一定等于数据库账号编号）。
@@ -842,7 +813,7 @@ BYTEA 编码为小写 hex。本接口按当前 DeviceKeyBundle 类型返回带�
 
 ```powershell
 $bundleBody = @{ friend_id = $friendId; device_id = $friendDeviceId } | ConvertTo-Json -Compress
-$bundle = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_device_key_bundle" -Headers @{ authorization = "Bearer $($login.access_token)" } -ContentType "application/json" -Body $bundleBody
+$bundle = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_device_key_bundle" -Headers @{ authorization = "Bearer $($verified.access_token)" } -ContentType "application/json" -Body $bundleBody
 $bundle | ConvertTo-Json -Depth 5
 ```
 
@@ -1042,7 +1013,7 @@ success只表示持久化完成，不代表对方收到、解密或已读。权�
 
 ### 18.9 客户端推荐调用顺序与未实现项
 
-HTTP登录→保存access_token→确认Alice发送设备有效→fetch_friends获取Bob实际id→friend_devices获取目标设备→按需获取bundle/prekey并在客户端加密→WebSocket升级→发送chat.newTextMessage→处理result或error。Token过期后通过现有HTTP刷新/登录取得新Token，下一条报文使用新Token；没有WebSocket refresh路由。
+HTTP登录→取得login_ticket→验证/登记设备→保存access_token→确认Alice发送设备有效→fetch_friends获取Bob实际id→friend_devices获取目标设备→按需获取bundle/prekey并在客户端加密→WebSocket升级→发送chat.newTextMessage→处理result或error。Token过期后通过现有HTTP刷新/登录取得新Token，下一条报文使用新Token；没有WebSocket refresh路由。
 
 接收流程：HTTP登录→带Token握手→发送 chat.sync.envelope→持久化保存信封及对应设备游标→发送 chat.envelopes.ack→核对 acknowledged_ids→has_more=true 时携带更新后的全部游标继续同步。未知发送设备不必预先加入 cursors。
 
@@ -1153,7 +1124,7 @@ envelope_ids必填，每次1–100个不重复的非零UUID字符串。事务验
 
 #### 建立接收连接
 
-客户端先通过HTTP登录取得access_token及已登记的device_id，再连接本地 `ws://localhost:8082/`；公网使用部署的WSS入口，例如 `wss://aittelegramapi.uk/`。握手请求必须带 `Authorization: Bearer ACCESS_TOKEN` 和 `deviceID: 当前设备UUID`。当前代码读取的是deviceID头，不是X-Device-Id；经过代理时需确保该头被转发。 请求头名称按大小写不敏感比较，推荐统一写deviceID；旧device_id头不再作为握手设备头。登录、发送、同步和ACK的JSON字段仍使用device_id或各接口定义的sender_device_id/recipient_device_id，不随请求头改名。
+客户端先通过HTTP登录取得login_ticket，再验证/登记设备取得access_token和device_id，再连接本地 `ws://localhost:8082/`；公网使用部署的WSS入口，例如 `wss://aittelegramapi.uk/`。握手请求必须带 `Authorization: Bearer ACCESS_TOKEN` 和 `deviceID: 当前设备UUID`。当前代码读取的是deviceID头，不是X-Device-Id；经过代理时需确保该头被转发。 请求头名称按大小写不敏感比较，推荐统一写deviceID；旧device_id头不再作为握手设备头。登录、发送、同步和ACK的JSON字段仍使用device_id或各接口定义的sender_device_id/recipient_device_id，不随请求头改名。
 
 服务器验证Token得到user_id，再验证设备归属、active状态及账号有效性，成功后创建绑定user_id/device_id的Session并登记在线目录。客户端不传user_id作为身份依据。Token错误返回401；设备不存在、非active/账号无效、归属错误分别返回403及device_not_found、device_not_active、device_not_owned。缺失或格式错误的device_id以及数据库异常，目前只由握手异常边界记录并关闭，不能保证有结构化HTTP错误响应。
 
@@ -1299,7 +1270,7 @@ password 必须是非空字符串，按原值验证，不去除空格；deviceID
 
 #### Windows PowerShell 测试
 
-只对测试设备执行，撤销不可通过本接口恢复。以下示例使用域名；直连当前 main 可改为 http://localhost:8081。
+只对测试设备执行，撤销不可通过本接口恢复。以下示例使用域名；直连当前 main 可改为 http://localhost:8082。
 
 ```powershell
 $baseUrl = "https://aittelegramapi.uk"
@@ -1401,3 +1372,153 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 前提是该 Bob UUID 在当前数据库中存在且与 Alice 已是好友。密码通过交互输入，不写入文档或输出 Token。
 
 验证边界：返回项均为 active 不等于已用 pending/revoked 测试数据验证过滤。密钥真实性、一次性预密钥领取、成功投递、Online_Sync、离线拉取、ACK 持久化、重复投递及撤销竞争仍需独立验收。脚本本身不会注册/撤销设备、消耗预密钥或写入消息，不验证完整端到端加密。
+
+## 21. login_ticket完整流程、设备验证及重试
+
+### 21.1 三类凭据与顺序
+
+| 凭据 | 来源 | 用途 | 生命周期 |
+|---|---|---|---|
+| login_ticket | POST /login_by_email | 完成一次已有设备验证或新设备登记 | 5分钟，一次性 |
+| access_token | POST /device_verification或/register_device；之后可刷新 | 普通受保护HTTP接口、WebSocket握手及业务报文 | 当前15分钟 |
+| refresh_token | 设备登录完成 | GET /refresh_token换取Access Token | 当前7天，绑定设备；刷新不延期 |
+
+新账号：POST /register_by_email→POST /login_by_email→POST /register_device→保存Token及device_id。已有设备：POST /login_by_email→POST /device_verification→保存新Token。ticket只放两个完成接口的JSON请求体，不放URL，也不作为普通Bearer Token。只有user_id或device_id不是身份凭据。
+
+### 21.2 POST `/device_verification`
+
+公开路由，内部强制ticket认证；旧GET方式不再注册。请求：
+
+```json
+{
+  "login_ticket": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4"
+}
+```
+
+ticket示例为格式占位，不能直接使用。device_id必须为标准36字符非零UUID字符串；缺失、非字符串、格式不合法、nil都返回400 invalid_device_id。服务器从ticket取user_id，忽略body.user_id，验证设备归属、状态及账号。成功200返回：
+
+```json
+{
+  "id": "7a29cba5-cfd4-41c2-b805-2f9782d5dffc",
+  "device_id": "f7ab7d41-9955-4a73-922d-7b7a80ebdac4",
+  "device_status": "active",
+  "access_token": "ACCESS_TOKEN",
+  "refresh_token": "REFRESH_TOKEN"
+}
+```
+
+新设备登记返回同结构但HTTP201。两个接口不再需要额外GenerateTokenPairs调用，也不接收账号密码。
+
+### 21.3 完成接口错误
+
+```json
+{"error":{"code":"invalid_login_ticket","message":"Login ticket is invalid, expired or already used"}}
+```
+
+| HTTP | code | 适用/处理 |
+|---|---|---|
+| 400 | missing_request_body / invalid_json | 两完成接口，修正请求 |
+| 401 | invalid_login_ticket | 两接口，缺失/格式/未知/过期/重放统一；过期或已用时重新密码登录 |
+| 403 | account_disabled | ticket关联账号不可用 |
+| 400 | invalid_device_id | 设备验证的UUID错误 |
+| 404 | device_not_found | 设备验证：设备不存在，可在ticket仍有效时选择登记新设备 |
+| 403 | device_not_owned | 设备验证：不属于该ticket用户，不能靠改body.user_id绕过 |
+| 403 | device_not_active | 设备验证：非active；不自动恢复撤销设备 |
+| 503 | database_unavailable | 设备验证：连接类/08开头SQLSTATE；登记：Connection类；结果可能不确定 |
+| 503 | retry_later | 仅设备验证：40001/40P01，可重试原ticket |
+| 500 | verification_device_failed | 设备验证其他异常 |
+| 500 | register_device_failed | 登记其他异常；保留13节字段400规则 |
+
+不同接口Handler错误映射不完全相同，客户端读取HTTP和code，不依赖message逐字匹配；多个字段错误时只返回先检测到的一个。
+
+### 21.4 原子性、并发和响应丢失
+
+ticket为256位随机数，数据库保存带login-ticket-v1用途前缀的BLAKE2b哈希，原文只返回客户端。LoginTicketRepository在事务中锁ticket行FOR UPDATE，从记录取可信用户，锁账号/设备并检查active，在取得锁后用clock_timestamp复查过期，标记消费，再写设备/bundle（仅登记）和绑定设备的Refresh Token。RefreshTokenRepository::insertRefreshToken接收同一个DatabaseConnection，不重新借连接、不提交。数据库失败回滚整组写入。
+
+校验失败一般不消费ticket；格式不合法的HTTP请求也不会触发消费。并发提交同一ticket至多一次成功；过期即使未清理也不能使用。成功只表示事务已提交，不代表客户端已保存Token。
+
+提交成功后响应丢失，再用同ticket返回401；连接类错误可能无法判断是否已提交。客户端重新验证密码取得新ticket。已有设备继续验证同一个device_id；新设备因UUID由服务器生成，丢失登记响应不具有恢复或幂等重放接口，新ticket再次登记可能产生另一个设备，禁止盲目无限重试。Access Token签名在提交后生成，签名失败同样需要重新登录。不要把捕获到500/超时视为事务一定未提交。
+
+### 21.5 iOS接入顺序
+
+1. 登录成功只保留短期ticket，不能此时连接WebSocket或上传预密钥。
+2. 本机有device_id时POST验证；没有时本地生成并保存真实私钥、公钥资料，POST登记。
+3. 成功后可靠保存正式Token和device_id；普通接口用access_token，刷新用refresh_token。
+4. WebSocket使用Authorization和deviceID握手头，业务JSON仍按18节带设备字段及有效Token；ticket不参与后续消息。
+5. 设备撤销会撤销其Refresh Token并关闭连接；已签发JWT不是立即全局失效，不能把签名验证成功当作设备仍有效。
+
+当前登记仍只验证密钥编码/长度，不证明签名密码学有效；测试随机占位公钥不适合真实加密。ticket不是邮件验证码或设备私钥所有权证明；它证明持有人刚通过密码检查。生产使用TLS，不记录凭据原文。
+
+[部署与登录500排查](#22-部署迁移授权和登录500排查)
+
+## 22. 部署迁移、授权和登录500排查
+
+### 22.1 数据库前置条件
+
+后端实际使用的每个数据库都必须应用 [002_login_tickets.sql](../database/migrations/002_login_tickets.sql)。已有users、user_devices、device_key_bundles和refresh_tokens为前置表。迁移增加/保证：
+
+| 对象 | 规则 |
+|---|---|
+| app.login_tickets.ticket_hash | TEXT主键，只允许64个小写hex字符；保存哈希而非ticket原文 |
+| user_id | UUID非空，引用app.users(id) |
+| created_at / expires_at | TIMESTAMPTZ非空，expires_at晚于created_at |
+| consumed_at | TIMESTAMPTZ可空，非空表示已消费 |
+| login_tickets_expiry_idx | 按expires_at的维护索引 |
+| refresh_tokens.device_id | UUID非空，与user_id构成外键指向同一user_devices记录 |
+| refresh_tokens_validate_device | 插入/修改归属时检查设备active；后续状态变化仍靠刷新时检查和撤销事务处理 |
+
+迁移是事务性的，不自动删除凭据；存在device_id为空的历史Refresh记录时会失败并回滚。只将旧记录标记revoked不能通过NOT NULL检查；必须由管理员明确清理或根据可信设备归属迁移，不能随机生成UUID回填。
+
+### 22.2 Ubuntu/WSL使用超级用户执行
+
+psql是客户端命令，默认数据库超级用户通常为postgres，不是psql。以下示例连接backend_dev，实际必须与后端DATABASE_URL数据库一致，DEV/TEST/PROD分别执行：
+
+```bash
+cd /mnt/d/projects/cpp_backend_server
+sudo -u postgres psql -d backend_dev -v ON_ERROR_STOP=1 < database/migrations/002_login_tickets.sql
+```
+
+不加-h时使用本地Unix socket；认证策略仍以该实例pg_hba.conf为准。若实际库不是backend_dev，替换后再执行。给运行角色授权，例如后端确实使用back_dev_app时：
+
+```bash
+sudo -u postgres psql -d backend_dev -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA app TO back_dev_app; GRANT SELECT, INSERT, UPDATE ON app.login_tickets TO back_dev_app;'
+```
+
+如果运行角色是backend_manager或其他角色，请替换授权对象，不要仅给DBeaver管理员授权。既有设备、密钥及refresh_tokens权限仍需保留。没有新增环境变量，仍使用DATABASE_URL、JWT_SECRET。先迁移/授权，再构建部署新二进制并更新客户端；本地示例为8082，部署服务端口以实际配置为准。详细测试命令见 [部署说明](login-ticket-deployment.md)。
+
+### 22.3 区分请求错误与内部失败
+
+| 现象 | 意义/下一步 |
+|---|---|
+| PowerShell无效URI/未能解析主机名 | 请求尚未发出；baseUrl应是纯http://localhost:8082字符串 |
+| 404 route_not_found | HTTP方法或路径错误，或请求到其他/旧二进制 |
+| 注册409后登录401 invalid_credentials | 注册冲突不能证明此邮箱属于预期账号，核对账号密码 |
+| 登录500、顶层code=internal_error | 已进入登录Handler；检查ticket表、权限、当前数据库和其他内部异常，尚未进入/register_device |
+| 设备完成401 invalid_login_ticket | 可能格式不符、过期或已用；重新登录拿ticket，不能靠换user_id解决 |
+| 设备完成500/超时 | 结果可能不确定，按21.4处理，不能直接假定可无限重放 |
+
+以与后端相同的数据库/运行角色执行只读检查：
+
+```sql
+SELECT current_database(), current_user;
+SELECT to_regclass('app.login_tickets') AS ticket_table;
+SELECT
+    has_table_privilege(current_user, to_regclass('app.login_tickets'), 'SELECT') AS can_select,
+    has_table_privilege(current_user, to_regclass('app.login_tickets'), 'INSERT') AS can_insert,
+    has_table_privilege(current_user, to_regclass('app.login_tickets'), 'UPDATE') AS can_update;
+```
+
+ticket_table为NULL表示此连接看不到该表；权限为false需要授权。以postgres运行时得到的true不能证明应用角色也有权限。常见SQLSTATE：42P01表不存在；42501权限不足（包括FOR SHARE相关权限）；42703字段不存在。不能只凭客户端internal_error确定具体哪一种。
+
+```bash
+sudo journalctl -u backend-server -n 80 --no-pager
+```
+
+登录Handler目前将异常转换为code但没有打印具体SQLSTATE，因此日志可能没有细节。诊断日志应只补错误码/阶段，不能输出密码、ticket、Token或带凭据的DATABASE_URL。文档不会把客户端500当作已确认的数据库故障。
+
+### 22.4 验证与维护范围
+
+仓库有login_ticket_isolated_test，覆盖模拟依赖下的过期、并发一次消费及回滚；tests/login_ticket_http_test.py可对已迁移的测试服务器执行真实HTTP验收。未配置测试URL和账号时该脚本跳过，不代表真实数据库测试成功。本次只核对源码和文档，没有执行目标数据库迁移、授权或部署。
+
+清理任务尚未自动调度。维护角色可按审计保留策略删除过期ticket；未清理不会让过期ticket恢复有效。API不会返回数据库ticket_hash，也没有ticket查询/续期/重放取回Token接口。

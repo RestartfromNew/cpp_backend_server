@@ -27,14 +27,15 @@ std::optional<RefreshTokenResult> RefreshTokenRepository::getRefreshTokenRecord(
     ConnectionLease lease(databasePool_);
     auto result=lease.connection().execute(R"(
         SELECT
-            id,
-            user_id,
-            token_hash,
-            floor(EXTRACT(EPOCH FROM expires_at))::bigint,
-            floor(EXTRACT(EPOCH FROM revoked_at))::bigint,
-            floor(EXTRACT(EPOCH FROM created_at))::bigint
-        FROM app.refresh_tokens
-        WHERE token_hash = $1
+            rt.id, rt.user_id, rt.token_hash,
+            floor(EXTRACT(EPOCH FROM rt.expires_at))::bigint,
+            floor(EXTRACT(EPOCH FROM rt.revoked_at))::bigint,
+            floor(EXTRACT(EPOCH FROM rt.created_at))::bigint
+        FROM app.refresh_tokens AS rt
+        JOIN app.user_devices AS ud
+          ON ud.device_id = rt.device_id AND ud.user_id = rt.user_id
+        JOIN app.users AS u ON u.id = rt.user_id
+        WHERE rt.token_hash = $1 AND ud.status = 'active' AND u.is_active = TRUE
         LIMIT 1
     )",parameters);
     if (result.rowCount()==0){return std::nullopt;}
@@ -50,23 +51,19 @@ std::optional<RefreshTokenResult> RefreshTokenRepository::getRefreshTokenRecord(
     };
 }
 //增
-void RefreshTokenRepository::insertRefreshToken(const boost::uuids::uuid& userId,const std::string& refreshToken_hash,TimePoint expiresAt) {
-    const auto expiresAtSeconds =std::chrono::duration_cast<std::chrono::seconds>(expiresAt.time_since_epoch()).count();
-    ConnectionLease lease(databasePool_);
-    const std::string refresh_Parameters[] = {boost::uuids::to_string(userId),refreshToken_hash,std::to_string(expiresAtSeconds)};
-    auto result=lease.connection().execute(R"(
-        INSERT INTO app.refresh_tokens (
-            user_id,
-            token_hash,
-            expires_at
-        )
-        VALUES (
-            $1,
-            $2,
-            to_timestamp($3::double precision)
-        )
-    )",refresh_Parameters);
+void RefreshTokenRepository::insertRefreshToken(DatabaseConnection& connection,
+    const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id,
+    const std::string& refreshToken_hash) {
+    const std::string parameters[] = {
+        boost::uuids::to_string(user_id), boost::uuids::to_string(device_id), refreshToken_hash};
+    auto result = connection.execute(R"(
+        INSERT INTO app.refresh_tokens (user_id, device_id, token_hash, expires_at)
+        VALUES ($1::uuid, $2::uuid, $3::text, clock_timestamp() + INTERVAL '7 days')
+        RETURNING id
+    )", parameters);
+    if (result.rowCount() != 1) throw std::runtime_error("Refresh token insert failed");
 }
+
 //改 标记为失效
 void RefreshTokenRepository::revokeRefreshToken(const std::string &refreshToken_hash) {
     const std::string refresh_Parameters[]={refreshToken_hash};
@@ -85,7 +82,7 @@ void RefreshTokenRepository::deleteRefreshToken(const std::string &refreshToken_
     const std::string refresh_Parameters[]={refreshToken_hash};
     ConnectionLease lease(databasePool_);
     auto result=lease.connection().execute(R"(
-    DELETE FROM app.refresh_tokensWHERE token_hash = $1)",refresh_Parameters);
+    DELETE FROM app.refresh_tokens WHERE token_hash = $1)",refresh_Parameters);
 
 }
 bool RefreshTokenRepository::rotate(const std::string& oldTokenHash,const std::string& newTokenHash) {
@@ -100,24 +97,25 @@ bool RefreshTokenRepository::rotate(const std::string& oldTokenHash,const std::s
                 WHERE token_hash = $1
                   AND revoked_at IS NULL
                   AND expires_at > CURRENT_TIMESTAMP
-                RETURNING user_id
-            EXTRACT(EPOCH FROM expires_at)::bigint;
+                RETURNING user_id, EXTRACT(EPOCH FROM expires_at)::bigint, device_id
             )",
             refresh_Parameters
         );
         if (result.rowCount() == 0) {return false;}
         const std::string userId{result.value(0, 0)};
-        const std::string new_token_Parameters[] = {userId,newTokenHash, std::string{result.value(0, 1)}};
+        const std::string new_token_Parameters[] = {userId,newTokenHash, std::string{result.value(0, 1)}, std::string{result.value(0, 2)}};
         auto result_insert=lease.connection().execute(R"(
         INSERT INTO app.refresh_tokens (
             user_id,
             token_hash,
-            expires_at
+            expires_at,
+            device_id
         )
         VALUES (
-            $1,
+            $1::uuid,
             $2,
-            to_timestamp($3::double precision)
+            to_timestamp($3::double precision),
+            $4::uuid
         )
         )",new_token_Parameters);
         return true;

@@ -100,7 +100,6 @@ int main()
         UserRepository userRepository{databasePool};
         RefreshTokenRepository refreshTokenRepository{databasePool};
         RefreshTokenService refreshTokenService{refreshTokenRepository};
-        UserService userService{userRepository,refreshTokenRepository};
         RegisterService registerService{userRepository};
 
 
@@ -110,13 +109,16 @@ int main()
             throw std::runtime_error("JWT_SECRET is not set or is empty");
         }
         AccessTokenService accessTokenService{secret};
+        UserService userService{userRepository,refreshTokenRepository,accessTokenService,refreshTokenService};
         RefreshTokenHandler refreshTokenHandler{refreshTokenService,accessTokenService};
 
         EnvelopeRepository envelope_repository{databasePool};
         ChatService chatService{envelope_repository};
         AuthMiddleWare authMiddleWare{accessTokenService};
-        LoginService loginService{userRepository,refreshTokenService,accessTokenService};
         KeyRepository keyRepository{databasePool};
+        LoginTicketRepository loginTicketRepository{databasePool, keyRepository};
+        LoginTicketService loginTickets{loginTicketRepository, accessTokenService, refreshTokenService};
+        LoginService loginService{userRepository, loginTickets};
         KeyService keyService{keyRepository,userRepository};
         WebSocketPoolConfig web_socket_pool_config{4,100};
         EnvelopeRepository envelopeRepository{databasePool};
@@ -125,8 +127,8 @@ int main()
         SessionIdentityService sessionIdentityService{userRepository};
         WebSocketDispatcher web_socket_dispatcher(service_thread_pool,authMiddleWare,sessionIdentityService);
         WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher,authMiddleWare,sessionIdentityService);
-        UserHandler userHandler{userService,registerService,loginService,keyService,web_socket_pool};
-        ChatHandler chatHandler{keyService};
+        UserHandler userHandler{userService,registerService,loginService,keyService,web_socket_pool,loginTickets};
+        ChatHandler chatHandler{keyService,loginTickets};
         Router router{authMiddleWare};
         router.addProtectedRoute(
             HttpMethod::POST,
@@ -135,13 +137,14 @@ int main()
                 return userHandler.RevokeDevice(request, user_id);
             }
         );
-        router.addProtectedRoute(
-            HttpMethod::POST,
-            "/register_device",
-            [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
-                return chatHandler.registerNewDevice(request, user_id);
+
+        router.addRoute(
+            HttpMethod::POST, "/register_device",
+            [&chatHandler](const HttpRequest& request)->HttpResponse {
+                return chatHandler.registerNewDevice(request);
             }
         );
+
         router.addProtectedRoute(
             HttpMethod::POST,
             "/upload_one_time_prekeys",
@@ -246,6 +249,7 @@ int main()
         router.addRoute(
             HttpMethod::POST,
             "/login_by_email",
+            //这里进行修改，登录之后将不会返回access token和refresh_token
             [&userHandler](const HttpRequest& request)->HttpResponse {
                 //返回一个HttpResponse
                 HttpResponse response=userHandler.LoginByEmail(request);
@@ -270,8 +274,17 @@ int main()
             }
         );
 
+        router.addRoute(
+           HttpMethod::POST,
+           "/device_verification",
+           [&userHandler](const HttpRequest& request)->HttpResponse {
+               HttpResponse response = userHandler.DeviceVerification(request);
+               response.headers["Content-Type"] = "application/json";
+               return response;
+           }
+       );
         //启动服务
-        TcpServer server{"0.0.0.0",8081};
+        TcpServer server{"0.0.0.0",8082};
         //TcpServer server{"0.0.0.0",8082};
         server.start();
         ThreadPoolConfig thread_pool_config{4,8};

@@ -130,9 +130,15 @@ std::optional<std::vector<Device>> KeyRepository::GetDevicesByUserId(const boost
 Device KeyRepository::RegisterNewDevice(const boost::uuids::uuid &user_id,std::string identity_public_key_hex,std::string device_name,std::string protocol_suite,
     std::string signed_prekey_id,std::string signed_prekey_public_hex,std::string signed_prekey_signature_hex) {
     ConnectionLease lease(databasePool_);
-    return lease.connection().withTransaction([&]()->Device {
+    return lease.connection().withTransaction([&]() {
+        return RegisterNewDevice(lease.connection(), user_id, identity_public_key_hex, device_name, protocol_suite,
+            signed_prekey_id, signed_prekey_public_hex, signed_prekey_signature_hex);
+    });
+}
+Device KeyRepository::RegisterNewDevice(DatabaseConnection& connection, const boost::uuids::uuid &user_id,std::string identity_public_key_hex,std::string device_name,std::string protocol_suite,
+    std::string signed_prekey_id,std::string signed_prekey_public_hex,std::string signed_prekey_signature_hex) {
         const std::string parameters[] = {boost::uuids::to_string(user_id), device_name,identity_public_key_hex,protocol_suite};
-        auto result = lease.connection().execute(
+        auto result = connection.execute(
         R"(
             INSERT INTO app.user_devices (
                 user_id,
@@ -162,7 +168,7 @@ Device KeyRepository::RegisterNewDevice(const boost::uuids::uuid &user_id,std::s
     );
         const std::string device_id{result.value(0, 0)};
         const std::string keyParameters[] = {device_id, signed_prekey_id,signed_prekey_public_hex, signed_prekey_signature_hex };
-        const auto key_result=lease.connection().execute(
+        const auto key_result=connection.execute(
             R"(
                 INSERT INTO app.device_key_bundles (
                     device_id,
@@ -192,7 +198,6 @@ Device KeyRepository::RegisterNewDevice(const boost::uuids::uuid &user_id,std::s
          .protocol_suite = std::string{result.value(0, 5)},
         };
         return device;
-    });
 }
 
 bool KeyRepository::createNewOnetimeKey(const boost::uuids::uuid& user_id,

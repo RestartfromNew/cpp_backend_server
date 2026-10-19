@@ -4,6 +4,8 @@
 
 #include "../../include/handler/UserHandler.h"
 #include "handler/UserHandler.h"
+#include "handler/LoginTicketResponse.h"
+#include "service/LoginTicketService.h"
 #include "nlohmann/json.hpp"
 #include <boost/uuid/string_generator.hpp>
 #include <optional>
@@ -131,8 +133,8 @@ std::string UserHandler::conversionInput(const std::string& input) {
 }
 
 UserHandler::UserHandler(UserService& userService,RegisterService& registerService,
-    LoginService &loginService,KeyService& keyService,WebSocketPool &web_socket_pool): userService_(userService),registerService_(registerService)
-,loginService_(loginService),keyService_(keyService),webSocketPool_(web_socket_pool){}
+    LoginService &loginService,KeyService& keyService,WebSocketPool &web_socket_pool, LoginTicketService& tickets): userService_(userService),registerService_(registerService)
+,loginService_(loginService),keyService_(keyService),webSocketPool_(web_socket_pool), tickets_(tickets){}
 
 HttpResponse UserHandler::Register(const HttpRequest &request) {
     HttpResponse response;
@@ -259,117 +261,61 @@ HttpResponse UserHandler::Register(const HttpRequest &request) {
     throw std::logic_error("Unhandled RegisterError");
 }
 HttpResponse UserHandler::LoginByEmail(const HttpRequest& request) {
-    HttpResponse response;
-    if (request.body.empty()) {
-        return ErrorResponseMaker(
-            HttpStatus::Bad_Request,
-            "missing_request_body",
-            "Request body is required"
-        );
-    }
-    const nlohmann::json body =nlohmann::json::parse(request.body,nullptr,false);
-    if (body.is_discarded() || !body.is_object()) {
-        return ErrorResponseMaker(
-            HttpStatus::Bad_Request,
-            "invalid_json",
-            "Request body must be a valid JSON object"
-        );
-    }
-    const auto emailIterator =body.find("email");
-
-    if (emailIterator == body.end() ||!emailIterator->is_string() ||emailIterator->get_ref<const std::string&>().empty()) {
-        return ErrorResponseMaker(
-            HttpStatus::Bad_Request,
-            "missing_register_email",
-            "Email must be a non-empty string"
-        );
-    }
-
-    const auto passwordIterator =body.find("password");
-
-    if (passwordIterator == body.end() ||!passwordIterator->is_string() ||passwordIterator->get_ref<const std::string&>().empty()) {
-        return ErrorResponseMaker(
-            HttpStatus::Bad_Request,
-            "missing_register_password",
-            "Password must be a non-empty string"
-        );
-    }
-    std::string device_id;
-    const auto deviceIterator = body.find("device_id");
-    if (deviceIterator != body.end() && !deviceIterator->is_null()) {
-        if (!deviceIterator->is_string()) {
-            return ErrorResponseMaker(
-                HttpStatus::Bad_Request,
-                "invalid_device_id",
-                "device_id must be a UUID string or null"
-            );
-        }
-
-        device_id = deviceIterator->get<std::string>();
-    }
-    std::optional<boost::uuids::uuid> parsedDeviceId;
-    if (!device_id.empty()) {
-        try {
-            parsedDeviceId = boost::uuids::string_generator{}(device_id);
-        } catch (const std::runtime_error&) {
-            return ErrorResponseMaker(
-                HttpStatus::Bad_Request,
-                "invalid_device_id",
-                "device_id must be a valid UUID"
-            );
-        }
-    }
-
-    std::string userEmail =emailIterator->get<std::string>();
-    std::string userPassword =passwordIterator->get<std::string>();
-    userEmail=toLower(conversionInput(userEmail));
-    userPassword=conversionInput(userPassword);
-    LoginServiceResult loginServiceResult=loginService_.loginByEmail(userEmail,userPassword);
-    if (std::holds_alternative<UserToken>(loginServiceResult.login)) {
-
-        const UserToken& user_token = std::get<UserToken>(loginServiceResult.login);
-        const User &user=user_token.user;
-        const std::string access_token=user_token.access_token;
-        const std::string refresh_token=user_token.refresh_token;
-        nlohmann::json body;
-        if (!parsedDeviceId) {
-            // Missing, null or empty device_id: no UUID parsing or device lookup.
-            //unregistered进入注册流程，unavailable进入恢复流程
-            body["device_status"] = "unregistered";
-        } else {
-            auto verified = keyService_.verifyDeviceId(user.id, *parsedDeviceId);
-            if (verified==std::nullopt) {
-                body["device_status"] ="unregistered";
-            }
-            else
-            body["device_status"] = verified ? "verified" : "unavailable";
-        }
-        body["id"] = boost::uuids::to_string(user.id);
-        body["display_name"] = user.display_name;
-        body["username"] = user.username;
-        body["access_token"] = access_token;
-        body["refresh_token"] = refresh_token;
-        response.body = body.dump();
-        response.status=HttpStatus::Ok;
+    const auto makeResult = [](HttpStatus status, const char* code) {
+        HttpResponse response;
+        response.status = status;
+        response.headers["Content-Type"] = "application/json";
+        response.body = nlohmann::json{{"code", code}}.dump();
         return response;
+    };
+    if (request.body.empty()) {
+        return makeResult(HttpStatus::Bad_Request, "missing_request_body");
     }
-    const auto loginError=std::get<LoginError>(loginServiceResult.login);
-    std::cout<<"login_error="<<loginError<<std::endl;
-    switch (loginError) {
-        case LoginError::NoUserFound:
-            return ErrorResponseMaker(HttpStatus::Unauthorized, "invalid_credentials","Email or password is incorrect");
-        case LoginError::InvalidCredentials:
-            return ErrorResponseMaker(HttpStatus::Unauthorized, "invalid_credentials","Email or password is incorrect");
-        case LoginError::NotActiveUser:
-            return ErrorResponseMaker(HttpStatus::Forbidden,"account_disabled","Account is disabled");
-        case LoginError::InternalError:
-            return ErrorResponseMaker(HttpStatus::Internal_Server_Error,"internal_error","Internal error");
-        case LoginError::ServiceUnavailable:
-            return ErrorResponseMaker(HttpStatus::Service_Unavailable,"service_unavailable","Service unavailable");
+    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) {
+        return makeResult(HttpStatus::Bad_Request, "invalid_json");
     }
-    throw std::logic_error("Unhandled LoginError");
-
-
+    const auto email = body.find("email");
+    if (email == body.end() || !email->is_string() || email->get_ref<const std::string&>().empty()) {
+        return makeResult(HttpStatus::Bad_Request, "missing_register_email");
+    }
+    const auto password = body.find("password");
+    if (password == body.end() || !password->is_string() || password->get_ref<const std::string&>().empty()) {
+        return makeResult(HttpStatus::Bad_Request, "missing_register_password");
+    }
+    try {
+        const auto userEmail = toLower(conversionInput(email->get<std::string>()));
+        const auto userPassword = conversionInput(password->get<std::string>());
+        const auto result = loginService_.loginByEmail(userEmail, userPassword);
+        switch (result.login) {
+            case LoginError::Success: {
+                if (!result.login_ticket) return makeResult(HttpStatus::Internal_Server_Error, "internal_error");
+                auto response = makeResult(HttpStatus::Ok, "login_success");
+                response.body = nlohmann::json{{"code", "login_success"},
+                    {"login_ticket", *result.login_ticket}, {"expires_in", 300}}.dump();
+                return response;
+            }
+            case LoginError::NoUserFound:
+            case LoginError::InvalidCredentials:
+                return makeResult(HttpStatus::Unauthorized, "invalid_credentials");
+            case LoginError::NotActiveUser:
+                return makeResult(HttpStatus::Forbidden, "account_disabled");
+            case LoginError::TooManyRequests:
+                return makeResult(HttpStatus::Service_Unavailable, "too_many_requests");
+            case LoginError::ServiceUnavailable:
+                return makeResult(HttpStatus::Service_Unavailable, "service_unavailable");
+            case LoginError::InternalError:
+                return makeResult(HttpStatus::Internal_Server_Error, "internal_error");
+        }
+        return makeResult(HttpStatus::Internal_Server_Error, "internal_error");
+    } catch (const DatabaseError& error) {
+        if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08")) {
+            return makeResult(HttpStatus::Service_Unavailable, "service_unavailable");
+        }
+        return makeResult(HttpStatus::Internal_Server_Error, "internal_error");
+    } catch (const std::exception&) {
+        return makeResult(HttpStatus::Internal_Server_Error, "internal_error");
+    }
 }
 HttpResponse UserHandler::getUser(const HttpRequest& request)
 {
@@ -660,5 +606,38 @@ HttpResponse UserHandler::RevokeDevice(const HttpRequest& request,const boost::u
         std::cerr << "[RevokeDevice] unexpected failure\n";
         return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
             "revoke_device_failed", "Unable to revoke device");
+    }
+}
+
+HttpResponse UserHandler::DeviceVerification(const HttpRequest& request) {
+    if (request.body.empty()) return ErrorResponseMaker(HttpStatus::Bad_Request, "missing_request_body", "Request body is required");
+    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    if (!body.is_object()) return ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_json", "Request body must be a JSON object");
+    const auto ticket = body.find("login_ticket");
+    if (ticket == body.end() || !ticket->is_string() || ticket->get_ref<const std::string&>().empty())
+        return ErrorResponseMaker(HttpStatus::Unauthorized, "invalid_login_ticket", "Login ticket is required");
+    const auto device = body.find("device_id");
+    if (device == body.end() || !device->is_string())
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_device_id", "Device must be a non-nil UUID");
+    boost::uuids::uuid deviceId{};
+    try {
+        const auto& text = device->get_ref<const std::string&>();
+        if (text.size() != 36 || text[8] != '-' || text[13] != '-' || text[18] != '-' || text[23] != '-')
+            throw std::invalid_argument("UUID format");
+        deviceId = boost::uuids::string_generator{}(text);
+        if (deviceId.is_nil()) throw std::invalid_argument("Nil UUID");
+    } catch (const std::exception&) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_device_id", "Device must be a non-nil UUID");
+    }
+    try {
+        return loginTicketResponse(tickets_.verifyDevice(ticket->get_ref<const std::string&>(), deviceId));
+    } catch (const DatabaseError& error) {
+        if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08"))
+            return ErrorResponseMaker(HttpStatus::Service_Unavailable, "database_unavailable", "Login outcome uncertain; log in again");
+        if (error.code() == "40001" || error.code() == "40P01")
+            return ErrorResponseMaker(HttpStatus::Service_Unavailable, "retry_later", "Retry with the same ticket");
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error, "verification_device_failed", "Unable to complete login");
+    } catch (const std::exception&) {
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error, "verification_device_failed", "Unable to complete login");
     }
 }

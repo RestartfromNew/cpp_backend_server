@@ -64,7 +64,7 @@ public:
     std::optional<User> CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name,const std::string &username);
     std::optional<PasswordLoginRecord> FindLoginRecordByEmail(const std::string &email);
     std::optional<std::string> FindLoginRecordByUserId(const boost::uuids::uuid &user_id);
-    void InsertRefreshToken(const boost::uuids::uuid &id,std::string &refreshToken_hash);
+
     std::optional<User> FindUserByUsername(const std::string &username);
     FriendshipRequestRecord CreateNewFriendship(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id,const std::string &message);
     std::optional<std::vector<FriendshipRequestRecord>> FetchUnprocessedRequest(const boost::uuids::uuid &my_id);

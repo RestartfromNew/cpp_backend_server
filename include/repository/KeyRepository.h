@@ -18,6 +18,9 @@
 
 class KeyRepository {
 public:
+    // Caller owns the transaction; no nested lease/commit.
+    Device RegisterNewDevice(DatabaseConnection& connection, const boost::uuids::uuid &user_id,std::string identity_public_key_hex,std::string device_name,std::string protocol_suite,
+    std::string signed_prekey_id,std::string signed_prekey_public_hex,std::string signed_prekey_signature_hex);
     explicit KeyRepository(DatabasePool &databasePool);
     std::optional<Device> FindDeviceByDeviceId(const boost::uuids::uuid &user_id,const boost::uuids::uuid& device_id);
     // bool InsertNewDevice(const boost::uuids::uuid &user_id,std::string device_name,std::vector<std::uint8_t> identity_public_key,std::string protocol_suite);

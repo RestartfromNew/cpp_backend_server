@@ -6,11 +6,16 @@
 
 #include <sodium/crypto_pwhash.h>
 
+#include "service/SessionIdentityService.h"
+
 UserService::UserService(
     UserRepository& repository,
-    RefreshTokenRepository& refresh_token_repository
+    RefreshTokenRepository& refresh_token_repository,
+    AccessTokenService& access_token_service,
+        RefreshTokenService& refresh_token_service
 )
-    : repository_(repository), refresh_token_repository_(refresh_token_repository)
+    : repository_(repository), refresh_token_repository_(refresh_token_repository),
+accessTokenService_(access_token_service), refreshTokenService_(refresh_token_service)
 {
 }
 bool UserService::verifyPassword( const std::string &password_hash, const std::string &password ) {
@@ -79,7 +84,7 @@ std::variant<bool,UserServiceErrorCode> UserService::revokeUserDevice(const boos
         return UserServiceErrorCode::InvalidPassword;
     switch (repository_.revokeUserDevice(my_uuid, device_id)) {
         case RevokeDeviceResult::Success: {
-            // Tokens are not device-bound yet; do not revoke other devices' tokens.
+            // Repository revokes only this device's bound refresh tokens in the same transaction.
             return true;
         }
 
@@ -93,4 +98,23 @@ std::variant<bool,UserServiceErrorCode> UserService::revokeUserDevice(const boos
             return UserServiceErrorCode::DeviceNotActive;
     }
     throw std::logic_error("Unhandled RevokeDeviceResult");
+}
+std::variant<bool,UserServiceErrorCode> UserService::verifyUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id) {
+    try {
+        auto result=repository_.VerifyUserDeviceRelation(my_uuid,device_id);
+        return result;
+    }catch (const DeviceRelationException& error) {
+        switch (error.error()) {
+            case DeviceRelationError::NoSuchDevice:
+                return UserServiceErrorCode::NoSuchDevice;
+
+            case DeviceRelationError::NotActivated:
+                return UserServiceErrorCode::NotActivated;
+
+            case DeviceRelationError::NotYourDevice:
+                return UserServiceErrorCode::NotYourDevice;
+        }
+
+        throw; // 未识别的分类，继续向上抛。
+    }
 }
