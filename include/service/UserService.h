@@ -24,11 +24,13 @@ enum class UserServiceErrorCode {
     NotActivated,
 
 };
+/** @brief 内部凭据组合；不可写日志，也不能作为用户和设备已经通过验证的替代证据。 */
 struct TokenPairs {
     std::string access_token;
     std::string refresh_token;
 };
 
+/** @brief 用户查询、好友操作及设备撤销业务；协调 Repository 并映射类型化结果，不操作 socket。 */
 class UserService {
 public:
     explicit UserService(

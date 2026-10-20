@@ -23,6 +23,7 @@
  * The connection is non-copyable or movable.
  */
 
+/** @brief 独占一个 PGconn，可移动不可复制；同一租约内串行使用，事务失败回滚并保留原始异常。 */
 class DatabaseConnection {
 public:
     /**
@@ -63,6 +64,7 @@ public:
  * @throws std::runtime_error If the query execution fails.
  */
     DatabaseResult execute(std::string_view sql,std::span<const std::string> parameters = {});
+    // 回调只能使用当前连接；异常回滚再抛出。成功返回前已提交，空业务结果仍可能提交只读事务。
     template <typename Function> auto withTransaction(Function&& operation)-> std::invoke_result_t<Function&&>
     {
         using Result = std::invoke_result_t<Function&&>;

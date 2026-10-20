@@ -1,9 +1,11 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/21.
 //
 
 #include "databases/DatabasePool.h"
 bool DatabasePool::init(const std::string & DatabaseUrl, const DatabasePoolConfig & config) {
+    backend::logging::Scope operationLog{"DatabasePool", "init"};
     std::unique_lock<std::mutex> lock{mutex_};
     if (initialized_)
         return false;
@@ -96,6 +98,7 @@ void DatabasePool::startMaintenanceThread() {
 }
 
 std::unique_ptr<DatabaseConnection> DatabasePool::getConnection() {
+    backend::logging::Scope operationLog{"DatabasePool", "getConnection"};
     std::unique_lock<std::mutex> lock{mutex_};
     const bool ready = cv_.wait_for(lock,std::chrono::milliseconds{config_.acquire_time},[this] {
         return !is_running|| !idle_queue.empty()|| total_connections_ < config_.max_connections;
@@ -104,6 +107,7 @@ std::unique_ptr<DatabaseConnection> DatabasePool::getConnection() {
         throw std::runtime_error("Connection pool is closed");
     }
     if (!ready) {
+        backend::logging::Logger::write(backend::logging::Level::Warn, "database_pool", "acquire_timeout");
         throw std::runtime_error("Timeout acquiring connection");
     }
     if (!idle_queue.empty()) {
@@ -138,6 +142,7 @@ std::unique_ptr<DatabaseConnection> DatabasePool::getConnection() {
 }
 
 void DatabasePool::releaseReturnedConnections(std::unique_ptr<DatabaseConnection> connection) {
+    backend::logging::Scope operationLog{"DatabasePool", "releaseReturnedConnections"};
     if (!connection)
         return;
     bool result=connection->reset();
@@ -172,6 +177,7 @@ void DatabasePool::releaseReturnedConnections(std::unique_ptr<DatabaseConnection
 }
 
 void DatabasePool::close() {
+    backend::logging::Scope operationLog{"DatabasePool", "close"};
     //清空空闲队列
     std::unique_lock<std::mutex> lock{mutex_};
     is_running=false;

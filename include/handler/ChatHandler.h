@@ -9,6 +9,7 @@
 #include "service/LoginTicketService.h"
 #include "http/HttpRequest.h"
 #include "http/HttpResponse.h"
+/** @brief 设备及公钥 HTTP 协议边界；登记以 ticket 认证，其余接口按各路由认证约定调用 Service。 */
 class ChatHandler {
 public:
     ChatHandler(KeyService& keyService, LoginTicketService& tickets);

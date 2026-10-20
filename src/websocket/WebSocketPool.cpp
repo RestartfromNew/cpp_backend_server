@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/27.
 //
@@ -13,6 +14,7 @@ WebSocketPool::~WebSocketPool() {
     close();
 }
 bool WebSocketPool::init() {
+    backend::logging::Scope operationLog{"WebSocketPool", "init"};
     {
         std::lock_guard lock(mutex_);
         if (initialized_ || !websocket_workers_.empty()) return false;
@@ -56,6 +58,7 @@ bool WebSocketPool::forward_connections(PendingWebsocket && request) {
     return true;
 }
 void WebSocketPool::close() {
+    backend::logging::Scope operationLog{"WebSocketPool", "close"};
     std::vector<std::unique_ptr<WebsocketWorker>> workersToDestroy;
     {
         std::lock_guard lock(mutex_);
@@ -89,12 +92,14 @@ void WebSocketPool::removeIndex(const boost::uuids::uuid &device_id,std::size_t 
 }
 
 void WebSocketPool::push_To_Device(const boost::uuids::uuid &device_id,  nlohmann::json message) {
+    backend::logging::Scope operationLog{"WebSocketPool", "push_To_Device"};
     std::lock_guard lock(mutex_);
 
     if (stopping || !initialized_)
         return;
     const auto element = online_connections_.find(device_id);
     if (element == online_connections_.end()) {
+        backend::logging::Logger::write(backend::logging::Level::Debug, "websocket_pool", "push_offline");
         return; // 设备离线，之后通过同步补取。
     }
     const OnlineConnection connection = element->second;
@@ -102,8 +107,10 @@ void WebSocketPool::push_To_Device(const boost::uuids::uuid &device_id,  nlohman
         return;
 
     websocket_workers_[connection.worker_id]->enqueuePush(connection.fd,connection.session_id,device_id,std::move(message));
+    backend::logging::Logger::write(backend::logging::Level::Debug, "websocket_pool", "push_enqueued", {{"worker_id", connection.worker_id}, {"fd", connection.fd}, {"session_id", connection.session_id}});
 }
 void WebSocketPool::push_To_User(const boost::uuids::uuid& user_id, nlohmann::json message) {
+    backend::logging::Scope operationLog{"WebSocketPool", "push_To_User"};
     std::lock_guard lock(mutex_);
     if (stopping || !initialized_) return;
     for (const auto& [deviceId, connection] : online_connections_) {
@@ -115,6 +122,7 @@ void WebSocketPool::push_To_User(const boost::uuids::uuid& user_id, nlohmann::js
     }
 }
 bool WebSocketPool::closeSession(const boost::uuids::uuid &user_id,const boost::uuids::uuid &device_id) {
+    backend::logging::Scope operationLog{"WebSocketPool", "closeSession"};
     std::vector<std::future<void>> completions;
     bool allQueued = true;
     {

@@ -12,6 +12,7 @@
 
 #include "repository/UserRepository.h"
 
+/** @brief 设备与预密钥业务入口；校验调用者权限、协调 Repository，不生成客户端私钥或解密消息。 */
 class KeyService {
     public:
     KeyService(KeyRepository &keyRepository, UserRepository &userRepository) ;

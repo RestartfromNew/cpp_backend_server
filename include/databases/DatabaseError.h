@@ -8,12 +8,14 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+// 基础设施/查询/约束/结果转换分类；HTTP 映射和是否重试由上层决定。
 enum class DatabaseErrorKind {
     Connection,
     Query,
     Constraint,
     DataConversion
 };
+/** @brief 数据库异常携带 kind、诊断 code 和可选约束名；上层映射业务错误，日志只取代码，不输出 SQL 或参数。 */
 class DatabaseError :public std::runtime_error{
     public:
     explicit DatabaseError(DatabaseErrorKind kind, std::string code, std::string message,std::string constraint);

@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <iostream>
 
+/** @brief 独占 socket 及输入/输出缓冲；由所属线程操作。write 仅排队，flush/sendAll 的语义不同。 */
 class Connection {
     public:
     explicit Connection(UniqueFd&& connection)noexcept;

@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/17.
 //
@@ -5,6 +6,7 @@
 #include "http/AuthMiddleWare.h"
 AuthMiddleWare::AuthMiddleWare(AccessTokenService &accessTokenService):accessTokenService_(accessTokenService) {}
 AuthResult AuthMiddleWare::authenticate(const HttpRequest &request)const{
+    backend::logging::Scope operationLog{"AuthMiddleWare", "authenticate"};
     auto iterator = request.headers.find("authorization");
     if (iterator == request.headers.end()) {
         iterator = request.headers.find("Authorization");
@@ -30,6 +32,7 @@ AuthResult AuthMiddleWare::authenticate(const HttpRequest &request)const{
     return AuthResult{authId};
 }
 AuthResult AuthMiddleWare::authenticate(const std::string& authorization) const {
+    backend::logging::Scope operationLog{"AuthMiddleWare", "authenticate"};
     const std::string prefix = "Bearer ";
 
     if (!authorization.starts_with(prefix) ||

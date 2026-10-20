@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 #include "service/LoginTicketService.h"
 #include <boost/uuid/uuid_io.hpp>
 #include <algorithm>
@@ -12,6 +13,7 @@ std::string LoginTicketService::hashTicket(const std::string& ticket) {
     return refresh_.RefreshTokenHash("login-ticket-v1:" + ticket);
 }
 std::optional<std::string> LoginTicketService::issue(const boost::uuids::uuid& user_id) {
+    backend::logging::Scope operationLog{"LoginTicketService", "issue"};
     unsigned char bytes[32];
     randombytes_buf(bytes, sizeof bytes);
     char encoded[65];
@@ -21,17 +23,21 @@ std::optional<std::string> LoginTicketService::issue(const boost::uuids::uuid& u
     return ticket;
 }
 CompletedLogin LoginTicketService::verifyDevice(const std::string& ticket, const boost::uuids::uuid& device) {
+    backend::logging::Scope operationLog{"LoginTicketService", "verifyDevice"};
     if (device.is_nil()) return {{LoginTicketStatus::DeviceNotFound}, {}, {}};
     return complete(ticket, &device, nullptr);
 }
 CompletedLogin LoginTicketService::registerDevice(const std::string& ticket, const DeviceRegistrationInput& input) {
+    backend::logging::Scope operationLog{"LoginTicketService", "registerDevice"};
     return complete(ticket, nullptr, &input);
 }
 CompletedLogin LoginTicketService::complete(const std::string& ticket, const boost::uuids::uuid* device,
     const DeviceRegistrationInput* input) {
+    backend::logging::Scope operationLog{"LoginTicketService", "complete"};
     if (!validTicket(ticket)) return {{LoginTicketStatus::InvalidTicket}, {}, {}};
     const auto refreshToken = refresh_.generateRefreshToken();
     const auto result = repository_.complete(hashTicket(ticket), refresh_.RefreshTokenHash(refreshToken), device, input);
+    backend::logging::Logger::write(backend::logging::Level::Info, "login", "device_completion_result", {{"status", static_cast<int>(result.status)}});
     if (result.status != LoginTicketStatus::Success) return {result, {}, {}};
     if (!result.identity) throw std::logic_error("Missing login identity");
     const auto accessToken = access_.generateAccessToken(boost::uuids::to_string(result.identity->user_id));

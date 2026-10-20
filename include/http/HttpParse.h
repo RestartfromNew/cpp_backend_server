@@ -111,6 +111,7 @@ struct StepResult {
     bool headersFinished = false;
 };
 
+/** @brief 增量解析内存中的 HTTP 字节；实例归单线程，消费 consumed 后继续 parse，不读取 socket 或执行业务。 */
 class HttpParse {
 
     public:

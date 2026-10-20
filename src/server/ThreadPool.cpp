@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 #include "server/ThreadPool.h"
 #include "http/HttpSession.h"
 #include <iostream>
@@ -10,6 +11,7 @@ ThreadPool::ThreadPool(const ThreadPoolConfig& config, TcpServer& server, Router
 ThreadPool::~ThreadPool() { close(); }
 
 bool ThreadPool::init() {
+    backend::logging::Scope operationLog{"ThreadPool", "init"};
     {
         std::lock_guard lock(mutex_);
         if (initialized_) return false;
@@ -62,6 +64,7 @@ void ThreadPool::running(const std::function<bool()>& stopRequested) {
     requestStop();
 }
 void ThreadPool::requestStop() {
+    backend::logging::Scope operationLog{"ThreadPool", "requestStop"};
     {
         std::lock_guard lock(mutex_);
         stopping = true;
@@ -73,6 +76,7 @@ void ThreadPool::requestStop() {
     condition_.notify_all();
 }
 void ThreadPool::close() {
+    backend::logging::Scope operationLog{"ThreadPool", "close"};
     requestStop();
     for (auto& thread : threads)
         if (thread.joinable()) thread.join();

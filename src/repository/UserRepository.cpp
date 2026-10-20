@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/2.
 //
@@ -37,6 +38,7 @@ namespace {
 
 UserRepository::UserRepository(DatabasePool &databasePool): databasePool_(databasePool){}
 std::optional<PasswordLoginRecord> UserRepository::FindLoginRecordByEmail(const std::string &email) {
+    backend::logging::Scope operationLog{"UserRepository", "FindLoginRecordByEmail"};
     const std::string parameters[] = {email};
     ConnectionLease lease(databasePool_);
     auto result = lease.connection().execute(
@@ -67,6 +69,7 @@ std::optional<PasswordLoginRecord> UserRepository::FindLoginRecordByEmail(const 
     };
 }
 std::optional<std::string> UserRepository::FindLoginRecordByUserId(const boost::uuids::uuid &user_id) {
+    backend::logging::Scope operationLog{"UserRepository", "FindLoginRecordByUserId"};
     const std::string parameters[] = {boost::uuids::to_string(user_id)};
     ConnectionLease lease(databasePool_);
     auto result = lease.connection().execute(
@@ -86,6 +89,7 @@ std::optional<std::string> UserRepository::FindLoginRecordByUserId(const boost::
 
 std::optional<User> UserRepository::findByEmail(const std::string& email)
 {
+    backend::logging::Scope operationLog{"UserRepository", "findByEmail"};
     //构造一个字符串数组
     const std::string parameters[] = {email};
     ConnectionLease lease(databasePool_);
@@ -109,6 +113,7 @@ std::optional<User> UserRepository::findByEmail(const std::string& email)
 }
 
 std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name,const std::string &username) {
+    backend::logging::Scope operationLog{"UserRepository", "CreateNewUserByEmail"};
     ConnectionLease lease(databasePool_);
 
     return lease.connection().withTransaction([&]() -> User {
@@ -151,6 +156,7 @@ std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &emai
 
 }
 std::optional<User> UserRepository::FindUserByUsername(const std::string &username) {
+    backend::logging::Scope operationLog{"UserRepository", "FindUserByUsername"};
     const std::string Parameters[] = {username};
     ConnectionLease lease(databasePool_);
     //表示第一个参数，就是email
@@ -173,6 +179,7 @@ std::optional<User> UserRepository::FindUserByUsername(const std::string &userna
 }
 RevokeDeviceResult UserRepository::revokeUserDevice(
     const boost::uuids::uuid& my_id, const boost::uuids::uuid& device_id) {
+    backend::logging::Scope operationLog{"UserRepository", "revokeUserDevice"};
     const std::string parameters[] = {boost::uuids::to_string(device_id)};
     const std::string actor = boost::uuids::to_string(my_id);
     ConnectionLease lease{databasePool_};
@@ -209,6 +216,7 @@ RevokeDeviceResult UserRepository::revokeUserDevice(
 }
 
 FriendshipRequestRecord UserRepository::CreateNewFriendship(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id,const std::string &message) {
+    backend::logging::Scope operationLog{"UserRepository", "CreateNewFriendship"};
     const std::string Parameters[] = {boost::uuids::to_string(my_id),boost::uuids::to_string(friend_id),"pending",message};
     ConnectionLease lease(databasePool_);
     auto result = lease.connection().execute(
@@ -258,6 +266,7 @@ FriendshipRequestRecord UserRepository::CreateNewFriendship(const boost::uuids::
 }
 
 std::optional<std::vector<FriendshipRequestRecord>> UserRepository::FetchUnprocessedRequest(const boost::uuids::uuid &my_id) {
+    backend::logging::Scope operationLog{"UserRepository", "FetchUnprocessedRequest"};
     const std::string Parameters[] = {boost::uuids::to_string(my_id),"pending"};
     ConnectionLease lease{databasePool_};
     auto result = lease.connection().execute(
@@ -296,6 +305,7 @@ std::optional<std::vector<FriendshipRequestRecord>> UserRepository::FetchUnproce
     return request_summary;
 }
 std::vector<User> UserRepository::FetchFriends(const boost::uuids::uuid& my_id) {
+    backend::logging::Scope operationLog{"UserRepository", "FetchFriends"};
     const std::string Parameters[] = {boost::uuids::to_string(my_id)};
     ConnectionLease lease{databasePool_};
     auto result = lease.connection().execute(
@@ -323,6 +333,7 @@ std::vector<User> UserRepository::FetchFriends(const boost::uuids::uuid& my_id) 
 FriendRequestProcessResult UserRepository::processFriendshipRequest(
     const boost::uuids::uuid& my_uuid, const boost::uuids::uuid& request_id,
     FriendRequestAction action) {
+    backend::logging::Scope operationLog{"UserRepository", "processFriendshipRequest"};
     std::string targetStatus;
     switch (action) {
         case FriendRequestAction::Accept: targetStatus = "accepted"; break;
@@ -371,6 +382,7 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
     });
 }
 bool UserRepository::VerifyFriendShip(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id) {
+    backend::logging::Scope operationLog{"UserRepository", "VerifyFriendShip"};
     const std::string Parameters[] = {boost::uuids::to_string(my_id),boost::uuids::to_string(friend_id)};
     ConnectionLease lease{databasePool_};
     auto result = lease.connection().execute(
@@ -386,6 +398,7 @@ bool UserRepository::VerifyFriendShip(const boost::uuids::uuid &my_id,const boos
 }
 
 bool UserRepository::VerifyUserDeviceRelation(const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id) {
+    backend::logging::Scope operationLog{"UserRepository", "VerifyUserDeviceRelation"};
     const std::string parameters[] = {boost::uuids::to_string(my_id),boost::uuids::to_string(device_id)};
     ConnectionLease lease{databasePool_};
     auto result = lease.connection().execute(

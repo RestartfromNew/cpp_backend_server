@@ -14,6 +14,7 @@
  *
  * The connection is non-copyable or movable.
  */
+/** @brief redis++ 基础键值访问包装；拥有 Redis 客户端，目前不等同于认证缓存或在线设备目录。 */
 class RedisClient {
     private:
     //理论上不需要这个options_

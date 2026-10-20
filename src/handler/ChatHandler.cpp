@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/10/8.
 //
@@ -72,6 +73,7 @@ ChatHandler::ChatHandler(KeyService& keyService, LoginTicketService& tickets) : 
 
 HttpResponse ChatHandler::registerNewDevice(
     const HttpRequest& request) {
+    backend::logging::Scope operationLog{"ChatHandler", "registerNewDevice"};
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
@@ -160,6 +162,7 @@ HttpResponse ChatHandler::registerNewDevice(
 
 HttpResponse ChatHandler::uploadOneTimePrekeys(
     const HttpRequest& request, const boost::uuids::uuid& user_id) {
+    backend::logging::Scope operationLog{"ChatHandler", "uploadOneTimePrekeys"};
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
@@ -248,6 +251,7 @@ HttpResponse ChatHandler::uploadOneTimePrekeys(
 
 HttpResponse ChatHandler::getOneTimePrekey(
     const HttpRequest& request, const boost::uuids::uuid& user_id) {
+    backend::logging::Scope operationLog{"ChatHandler", "getOneTimePrekey"};
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
@@ -329,6 +333,7 @@ HttpResponse ChatHandler::getOneTimePrekey(
 
 HttpResponse ChatHandler::fetchUserDevices(
     const HttpRequest& request, const boost::uuids::uuid& user_id) {
+    backend::logging::Scope operationLog{"ChatHandler", "fetchUserDevices"};
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
@@ -411,6 +416,7 @@ HttpResponse ChatHandler::fetchUserDevices(
 
 HttpResponse ChatHandler::getDeviceKeyBundle(
     const HttpRequest& request, const boost::uuids::uuid& user_id) {
+    backend::logging::Scope operationLog{"ChatHandler", "getDeviceKeyBundle"};
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");

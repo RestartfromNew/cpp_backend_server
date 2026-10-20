@@ -63,6 +63,7 @@ constexpr const char* reasonPhrase(HttpStatus status)
     return "Unknown";
 }
 
+/** @brief HTTP 状态、头和响应体；响应可能包含凭据，只记录状态与固定操作名，不打印完整 body。 */
 struct HttpResponse {
     HttpStatus status{HttpStatus::Ok};
     std::unordered_map<std::string, std::string> headers;

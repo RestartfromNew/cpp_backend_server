@@ -9,6 +9,7 @@
 #include "Auth/AccessTokenService.h"
 #include "http/HttpRequest.h"
 #include "http/HttpResponse.h"
+/** @brief 刷新 Token 的 HTTP 边界；解析凭据并映射服务结果，不将凭据写日志。 */
 class RefreshTokenHandler {
 private:
     RefreshTokenService &refreshTokenService_;

@@ -17,12 +17,14 @@ enum class AccessTokenError {
     Expired
 };
 
+/** @brief JWT 验证得到的用户身份；不是用户自行提交的可信 user_id，也不证明设备仍有效。 */
 struct AuthIdentity {
     boost::uuids::uuid userId;
 };
 
 using AccessTokenResult =
     std::variant<AuthIdentity, AccessTokenError>;
+/** @brief 签发与本地验证 HS256 JWT；不查询设备状态。调用者另行绑定 Session 身份，密钥与 Token 不得写日志。 */
 class AccessTokenService {
 public:
     AccessTokenService(const std::string &secret);

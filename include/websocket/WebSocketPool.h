@@ -21,10 +21,12 @@
 
 #include "http/HttpRequest.h"
 
+/** @brief WebSocket worker 数及现有容量配置；不应把字段存在视为所有内部队列已有背压限制。 */
 struct WebSocketPoolConfig {
     int min_capacity;
     int max_task_capacity;
 };
+/** @brief 在线目录快照：worker/fd/session_id/user；投递后目标 Worker 再核对，避免断线重连和 fd 重用误发。 */
 struct OnlineConnection {
     std::size_t worker_id;     // 属于哪个 Worker
     int fd;                    // 哪条连接
@@ -33,6 +35,7 @@ struct OnlineConnection {
 };
 class WebSocketDispatcher;
 
+/** @brief 互斥保护设备在线目录并转投目标 Worker；不共享 Session 对象，不持有独立业务 Task 执行队列。 */
 class WebSocketPool {
     public:
     using Task=std::function<void()>;
@@ -44,6 +47,7 @@ class WebSocketPool {
     void push_To_Device(const boost::uuids::uuid &device_id,  nlohmann::json);
     void push_To_User(const boost::uuids::uuid &user_id,  nlohmann::json);
     void addIndex(const boost::uuids::uuid &device_id,const boost::uuids::uuid &user_id,std::size_t worker_id,int fd,std::uint64_t session_id);
+    // 必须匹配 worker/fd/session_id 才删除，避免旧连接清理覆盖同设备新连接。
     void removeIndex(const boost::uuids::uuid &device_id,std::size_t worker_id,int fd,std::uint64_t session_id);
     // HTTP/owner threads only; never wait from a WebSocket worker.
     bool closeSession(const boost::uuids::uuid &user_id,const boost::uuids::uuid &device_id);

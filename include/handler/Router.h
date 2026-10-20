@@ -12,6 +12,8 @@
 #include "http/AuthMiddleWare.h"
 #include "http/HttpRequest.h"
 #include "http/HttpResponse.h"
+/** @brief 按方法和精确路径选择 HTTP Handler；受保护路由先验证 Token，注册完成后共享读取，避免运行时无锁修改。 */
+// 路由条目只在启动组装期间写入；HTTP 线程并发读取时不得新增或删除条目。
 class Router {
 public:
     Router(const AuthMiddleWare &authMiddleWare);

@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/28.
 //
@@ -252,6 +253,7 @@ void WebsocketWorker::removeSession(int fd) {
         device_id = iterator->second->getDeviceId();
     }
 
+    backend::logging::Logger::write(backend::logging::Level::Info, "websocket", "session_removing", {{"worker_id", worker_id_}, {"fd", fd}, {"session_id", sessionId}});
     pool_.removeIndex(device_id,worker_id_,fd,sessionId);
     ::epoll_ctl(epoll_fd_,EPOLL_CTL_DEL,fd,nullptr);
     closing_sessions_.erase(fd);
@@ -358,10 +360,12 @@ void WebsocketWorker::handleTask() {
 
 }
 void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
+    backend::logging::Scope operationLog{"WebsocketWorker", "acceptingSessions"};
     const HttpRequest& request=session.request;
     auto authResult=auth_middle_ware_.authenticate(request);
     HttpResponse response;
     if (std::holds_alternative<AuthError>(authResult.result)) {
+        backend::logging::Logger::write(backend::logging::Level::Warn, "websocket", "handshake_token_rejected", {{"worker_id", worker_id_}, {"fd", session.connection.fd()}});
         //需要验证accesstoken
         const auto error = std::get<AuthError>(authResult.result);
         response = ErrorResponseMaker(
@@ -427,6 +431,7 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
     const auto device_id= boost::uuids::string_generator{}(deviceID->second);
     const auto verify_result=sessionIdentityService_.verifySessionIdentity(user_id,device_id);
     if (verify_result != IdentityState::Success) {
+        backend::logging::Logger::write(backend::logging::Level::Warn, "websocket", "handshake_device_rejected", {{"worker_id", worker_id_}, {"status", static_cast<int>(verify_result)}});
         switch (verify_result) {
             case IdentityState::NoSuchDevice:
                 response = ErrorResponseMaker(
@@ -499,6 +504,7 @@ void WebsocketWorker::acceptingSessions(PendingWebsocket session) {
         throw std::system_error(errno,std::generic_category(),"Failed to register WebSocket session");
      }
     pool_.addIndex(device_id,user_id,worker_id_,socketFd,sessionId);
+    backend::logging::Logger::write(backend::logging::Level::Info, "websocket", "session_registered", {{"worker_id", worker_id_}, {"fd", socketFd}, {"session_id", sessionId}});
 }
 void WebsocketWorker::handleReadable(int fd) {
     if (revoke_deadlines_.contains(fd)) return;
@@ -526,18 +532,22 @@ void WebsocketWorker::handleReadable(int fd) {
             << ", payload_bytes="
             << frame.payload.size()
             << ", application="
+            // 现有调试输出包含完整业务 JSON，可能含认证凭据；新增 Logger 不沿用此做法。
             << applicationMessage.dump()
             << '\n';
 
+        backend::logging::Logger::write(backend::logging::Level::Debug, "websocket", "business_frame", {{"worker_id", worker_id_}, {"session_id", sessionId}, {"bytes", frame.payload.size()}, {"opcode", static_cast<int>(frame.opcode)}});
         //dispatch的第一个参数是json,第二个是整个reply;在task中传入的response，传入这个lambda
         dispatcher_.dispatch(session.getDeviceId(),session.getUserId(),std::move(applicationMessage),[this, fd, sessionId](nlohmann::json response) mutable {
             //整个lambda函数体就是一个task,调用transferTask会把整个构造任务放在worker的task.queue中
+            // Reply 可能来自业务线程；必须排回 Worker，再访问 Session 和输出缓冲。
             transferTask(
                     //这里还没有进入投递
                     [this,fd,sessionId,response = std::move(response)]() mutable {
                         int targetFd = fd;
                         std::uint64_t targetSessionId = sessionId;
                         const auto type = response.value("type", "");
+                        // Pool 只查在线目录并投递到目标 Worker；不能在当前线程直接访问对方 Session。
                         if (type == "online_sync" || type == "Online_Sync") {
                              const auto recipientDeviceId =boost::uuids::string_generator{}(response.at("envelope").at("recipient_device_id").get<std::string>());
                              pool_.push_To_Device(recipientDeviceId, std::move(response));
@@ -699,6 +709,7 @@ void WebsocketWorker::handleTimer() {
     }
 }
 void WebsocketWorker::enqueuePush(int fd,std::uint64_t session_id,const boost::uuids::uuid& device_id,nlohmann::json message) {
+    backend::logging::Scope operationLog{"WebsocketWorker", "enqueuePush"};
     transferTask(
         [this, fd, session_id, device_id,
          message = std::move(message)]() mutable {
@@ -727,6 +738,7 @@ void WebsocketWorker::enqueuePush(int fd,std::uint64_t session_id,const boost::u
                     encoded.size()
                 }
             );
+            backend::logging::Logger::write(backend::logging::Level::Debug, "websocket", "push_buffered", {{"worker_id", worker_id_}, {"fd", fd}, {"session_id", session_id}, {"bytes", encoded.size()}});
             setWriteInterest(fd, true);
         }
     );
@@ -751,6 +763,7 @@ void WebsocketWorker::enqueuecloseSession(int fd,std::uint64_t session_id,const 
 
 std::future<void> WebsocketWorker::revokeDeviceConnections(
     const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id) {
+    backend::logging::Scope operationLog{"WebsocketWorker", "revokeDeviceConnections"};
     auto completion = std::make_shared<std::promise<void>>();
     auto future = completion->get_future();
     transferTask([this, user_id, device_id, completion] {

@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/16.
 //
@@ -15,6 +16,7 @@ bool LoginService::verifyPassword( const std::string &password_hash, const std::
 }
 
 LoginServiceResult LoginService::loginByEmail(const std::string &email, const std::string &password) {
+    backend::logging::Scope operationLog{"LoginService", "loginByEmail"};
     //默认传入的时候格式已经正确
     auto password_login_record=userRepository_.FindLoginRecordByEmail(email);
     if (!password_login_record)
@@ -28,5 +30,6 @@ LoginServiceResult LoginService::loginByEmail(const std::string &email, const st
         return LoginServiceResult{LoginError::NotActiveUser};
     auto ticket = tickets_.issue(password_login_record->id);
     if (!ticket) return LoginServiceResult{LoginError::NotActiveUser};
+    backend::logging::Logger::write(backend::logging::Level::Info, "login", "ticket_issued");
     return LoginServiceResult{LoginError::Success, std::move(ticket)};
 }

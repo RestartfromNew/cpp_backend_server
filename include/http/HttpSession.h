@@ -18,6 +18,7 @@
 #include <iostream>
 #include "websocket/WebSocketPool.h"
 #include "websocket/WebsocketWorker.h"
+/** @brief HTTP 连接编排：增量解析、路由、响应；Upgrade 移动连接给 Worker，移动后不再由 HTTP 会话使用。 */
 class HttpSession {
     private:
     Connection connection_;

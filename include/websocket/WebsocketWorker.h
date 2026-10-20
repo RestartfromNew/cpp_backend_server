@@ -34,10 +34,12 @@
 class WebSocketPool;
 class WebSocketDispatcher;
 
+/** @brief HTTP 升级待办，拥有已移动的 Connection 和请求；由接收 Worker 验证后注册 Session。 */
 struct PendingWebsocket {
     Connection connection;
     HttpRequest request;
 };
+/** @brief 独占本 Worker 的 Session map 和 epoll；跨线程通过队列/eventfd 投递，跨 Worker 路由经 Pool 在线目录。 */
 class WebsocketWorker {
 public:
     using Task=std::function<void()>;
@@ -51,6 +53,7 @@ public:
     void enqueuecloseSession(int fd,std::uint64_t session_id,const boost::uuids::uuid& device_id);
     std::future<void> revokeDeviceConnections(const boost::uuids::uuid& user_id,
         const boost::uuids::uuid& device_id);
+    // 可由外部线程调用；只排队，目标 Worker 执行时再核对 fd/session/device。
     void enqueuePush(int fd,std::uint64_t session_id,const boost::uuids::uuid& device_id,nlohmann::json message);
 private:
     std::size_t worker_id_;
@@ -69,6 +72,7 @@ private:
     //和worker放入业务池的队列区别
     std::queue<Task> task_queue_;
     std::queue<PendingWebsocket> pending_session_queue_;
+    // 线程封闭资源：只有 worker() 所属线程可读写，外部调用通过任务队列转交。
     std::unordered_map<int,std::unique_ptr<WebSocketSession>> websocket_sessions_map;
     std::unordered_set<int> closing_sessions_;
     std::unordered_map<int, std::chrono::steady_clock::time_point> revoke_deadlines_;

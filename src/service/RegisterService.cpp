@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/14.
 //
@@ -18,6 +19,7 @@ namespace {
 RegisterService::RegisterService(UserRepository& repository):userRepository_{repository} {};
 //默认再handler中已经进行过去掉前后空格，email已经全部转换为小写
 RegisterResult RegisterService::RegisterUserByEmail( const std::string &email,const std::string & password,  const std::string  &display_name,const std::string &username) {
+    backend::logging::Scope operationLog{"RegisterService", "RegisterUserByEmail"};
     if (!checkEmail(email))
         return RegisterResult{RegisterError::InvalidEmail};
     if (!checkPassword(password))
@@ -49,27 +51,32 @@ RegisterResult RegisterService::RegisterUserByEmail( const std::string &email,co
     }
 }
 bool RegisterService::checkEmail(const std::string &email) {
+    backend::logging::Scope operationLog{"RegisterService", "checkEmail"};
     std::regex pattern(EMAIL_PATTERN);
     // Tests whether a regular expression matches the entire target string.
     return std::regex_match(email, pattern);
 
 }
 bool RegisterService::checkDisplayName(const std::string &display_name) {
+    backend::logging::Scope operationLog{"RegisterService", "checkDisplayName"};
     std::regex pattern(DISPLAY_NAME);
     return std::regex_match(display_name, pattern);
     return false;
 
 }
 bool RegisterService::checkPassword(const std::string &password) {
+    backend::logging::Scope operationLog{"RegisterService", "checkPassword"};
     static const std::regex pattern(R"(^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])\S{6,20}$)");
     return std::regex_match(password, pattern);
 
 }
 bool RegisterService::checkUsername(const std::string &username) {
+    backend::logging::Scope operationLog{"RegisterService", "checkUsername"};
     static const std::regex pattern(USERNAME_PATTERN);
     return std::regex_match(username, pattern);
 }
 std::string RegisterService::passwordHash(const std::string &password) {
+    backend::logging::Scope operationLog{"RegisterService", "passwordHash"};
     char hashedPassword[crypto_pwhash_STRBYTES];
     if (crypto_pwhash_str(
            hashedPassword,

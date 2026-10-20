@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/10/7.
 //
@@ -61,6 +62,7 @@ namespace {
 
  KeyRepository::KeyRepository(DatabasePool &databasePool):databasePool_(databasePool){}
 std::optional<Device> KeyRepository::FindDeviceByDeviceId(const boost::uuids::uuid &user_id,const boost::uuids::uuid& device_id) {
+    backend::logging::Scope operationLog{"KeyRepository", "FindDeviceByDeviceId"};
   const std::string Parameters[] = {boost::uuids::to_string(user_id),boost::uuids::to_string(device_id)};
      ConnectionLease lease{databasePool_};
      auto result = lease.connection().execute(
@@ -94,6 +96,7 @@ std::optional<Device> KeyRepository::FindDeviceByDeviceId(const boost::uuids::uu
  }
 
 std::optional<std::vector<Device>> KeyRepository::GetDevicesByUserId(const boost::uuids::uuid &user_id) {
+    backend::logging::Scope operationLog{"KeyRepository", "GetDevicesByUserId"};
     const std::string Parameters[] = {boost::uuids::to_string(user_id)};
     ConnectionLease lease{databasePool_};
     auto result = lease.connection().execute(
@@ -129,6 +132,7 @@ std::optional<std::vector<Device>> KeyRepository::GetDevicesByUserId(const boost
 }
 Device KeyRepository::RegisterNewDevice(const boost::uuids::uuid &user_id,std::string identity_public_key_hex,std::string device_name,std::string protocol_suite,
     std::string signed_prekey_id,std::string signed_prekey_public_hex,std::string signed_prekey_signature_hex) {
+    backend::logging::Scope operationLog{"KeyRepository", "RegisterNewDevice"};
     ConnectionLease lease(databasePool_);
     return lease.connection().withTransaction([&]() {
         return RegisterNewDevice(lease.connection(), user_id, identity_public_key_hex, device_name, protocol_suite,
@@ -137,6 +141,7 @@ Device KeyRepository::RegisterNewDevice(const boost::uuids::uuid &user_id,std::s
 }
 Device KeyRepository::RegisterNewDevice(DatabaseConnection& connection, const boost::uuids::uuid &user_id,std::string identity_public_key_hex,std::string device_name,std::string protocol_suite,
     std::string signed_prekey_id,std::string signed_prekey_public_hex,std::string signed_prekey_signature_hex) {
+    backend::logging::Scope operationLog{"KeyRepository", "RegisterNewDevice"};
         const std::string parameters[] = {boost::uuids::to_string(user_id), device_name,identity_public_key_hex,protocol_suite};
         auto result = connection.execute(
         R"(
@@ -202,6 +207,7 @@ Device KeyRepository::RegisterNewDevice(DatabaseConnection& connection, const bo
 
 bool KeyRepository::createNewOnetimeKey(const boost::uuids::uuid& user_id,
     const boost::uuids::uuid &device_id,std::unordered_map<int,std::string> prekey_record) {
+    backend::logging::Scope operationLog{"KeyRepository", "createNewOnetimeKey"};
     ConnectionLease lease(databasePool_);
     return lease.connection().withTransaction([&]()->bool {
         const std::string deviceParameters[] = {
@@ -247,6 +253,7 @@ bool KeyRepository::createNewOnetimeKey(const boost::uuids::uuid& user_id,
 PrekeyClaimResult KeyRepository::getOneTimeKey(
     const boost::uuids::uuid& my_id, const boost::uuids::uuid& friend_id,
     const boost::uuids::uuid& device_id) {
+    backend::logging::Scope operationLog{"KeyRepository", "getOneTimeKey"};
     ConnectionLease lease(databasePool_);
     const std::string parameters[] = {
         boost::uuids::to_string(my_id), boost::uuids::to_string(friend_id),
@@ -312,6 +319,7 @@ PrekeyClaimResult KeyRepository::getOneTimeKey(
 
 std::vector<Device> KeyRepository::GetUserDevicesByUserId(
     const boost::uuids::uuid& my_id, const boost::uuids::uuid& friend_id) {
+    backend::logging::Scope operationLog{"KeyRepository", "GetUserDevicesByUserId"};
     const std::string parameters[] = {
         boost::uuids::to_string(my_id), boost::uuids::to_string(friend_id)
     };
@@ -349,6 +357,7 @@ std::vector<Device> KeyRepository::GetUserDevicesByUserId(
 }
 
 std::optional<DeviceKeyBundle> KeyRepository::getDeviceKeyBundle(const boost::uuids::uuid &friend_id,const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id) {
+    backend::logging::Scope operationLog{"KeyRepository", "getDeviceKeyBundle"};
     const std::string parameters[] = {boost::uuids::to_string(my_id), boost::uuids::to_string(friend_id), boost::uuids::to_string(device_id)};
     ConnectionLease lease(databasePool_);
     auto result = lease.connection().execute(

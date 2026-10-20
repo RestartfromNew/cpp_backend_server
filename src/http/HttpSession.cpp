@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/11.
 //
@@ -9,6 +10,7 @@
 HttpSession::HttpSession(Connection &&connection, Router &router) :connection_(std::move(connection)), router_(router) {
 }
 std::optional<PendingWebsocket> HttpSession::HandleHttpSession() {
+    backend::logging::Scope operationLog{"HttpSession", "HandleHttpSession"};
     HttpResponseGenerator generator;
     HttpResponse response;
     while (connection_.is_open()) {
@@ -30,6 +32,7 @@ std::optional<PendingWebsocket> HttpSession::HandleHttpSession() {
             continue;
         }
         if (result.status == ParseStatus::Error) {
+            backend::logging::Logger::write(backend::logging::Level::Warn, "http", "parse_rejected");
             response = ErrorResponseMaker(HttpStatus::Bad_Request,"invalid_http_request","Invalid HTTP request");
 
             response.headers["Connection"] = "close";
@@ -72,16 +75,19 @@ std::optional<PendingWebsocket> HttpSession::HandleHttpSession() {
             }
 
             if (websocketUpgrade) {
+                backend::logging::Logger::write(backend::logging::Level::Debug, "http", "upgrade_forwarded");
                 return PendingWebsocket{std::move(connection_),std::move(request)};
             }
             try {
                 response = router_.route(request);
+                backend::logging::Logger::write(backend::logging::Level::Info, "http", "response", {{"status", static_cast<int>(response.status)}, {"method", static_cast<int>(request.method)}});
                 response.headers["Connection"] = "close";
                 std::string bytes =generator.generateHttpResponse(response);
                 connection_.sendAll(bytes);
                 return std::nullopt;
             }
             catch (DatabaseError &error) {
+                backend::logging::Logger::write(backend::logging::Level::Error, "http", "database_error", {{"code", error.code()}, {"kind", static_cast<int>(error.kind())}});
                 std::cerr
                << "HTTP request failed: "
                << error.what()
@@ -113,6 +119,7 @@ std::optional<PendingWebsocket> HttpSession::HandleHttpSession() {
 
             }
             catch (const std::exception& error) {
+                backend::logging::Logger::write(backend::logging::Level::Error, "http", "handler_exception");
                 std::cerr
                << "HTTP request failed: "
                << error.what()

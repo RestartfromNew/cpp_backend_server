@@ -22,6 +22,7 @@ enum class Opcode : std::uint8_t {
     Pong         = 0xA
 };
 
+/** @brief 协议帧的数据表示；payload 可能包含 Token 或密文，日志只记录长度及 opcode。 */
 struct Frame {
     //一个websocket帧的结构
     //Fin
@@ -35,12 +36,14 @@ struct Frame {
 enum class FrameParseStatus {
     Success, Error,NeedMoreData
 };
+/** @brief 帧解析状态、消费长度及解析结果；数据不完整应等待更多字节，不能当作完整消息执行业务。 */
 struct FrameParseResult {
     FrameParseStatus status;
     std::size_t consumed;
     std::vector<Frame> frames;
 };
 
+/** @brief 单连接帧解析、缓冲与身份状态；只由所属 Worker 操作，session_id 防止 fd 重用造成误投。 */
 class WebSocketSession {
 public:
     using Clock = std::chrono::steady_clock;

@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/16.
 //
@@ -5,6 +6,7 @@
 #include "Auth/RefreshTokenService.h"
 RefreshTokenService::RefreshTokenService(RefreshTokenRepository &refreshTokenRepository):refreshTokenRepository_(refreshTokenRepository){};
 std::string RefreshTokenService::generateRefreshToken() {
+    backend::logging::Scope operationLog{"RefreshTokenService", "generateRefreshToken"};
     // 32 字节，也就是 256 位随机数据。
     unsigned char randomBytes[32];
     randombytes_buf(randomBytes, sizeof randomBytes);
@@ -20,6 +22,7 @@ std::string RefreshTokenService::generateRefreshToken() {
     return std::string{encoded};
 }
 std::variant<RefreshTokenStatus,std::string> RefreshTokenService::validate(const std::string& refreshToken_origin) {
+    backend::logging::Scope operationLog{"RefreshTokenService", "validate"};
     std::string refreshToken_old_hash=RefreshTokenHash(refreshToken_origin);
     auto record=refreshTokenRepository_.getRefreshTokenRecord(refreshToken_old_hash);
     if (record==std::nullopt)
@@ -37,13 +40,16 @@ std::variant<RefreshTokenStatus,std::string> RefreshTokenService::validate(const
 }
 //验证旧的token是否过期和合法，如果过期就生成新的token
 std::variant<std::string,bool> RefreshTokenService::fleshRefreshToken(const std::string& refreshToken_old) {
+    backend::logging::Scope operationLog{"RefreshTokenService", "fleshRefreshToken"};
   return false;
 }
 //定时检查并删除失效token
 std::size_t RefreshTokenService::deleteExpiredBefore(std::chrono::system_clock::time_point cutoff) {
+    backend::logging::Scope operationLog{"RefreshTokenService", "deleteExpiredBefore"};
     return refreshTokenRepository_.deleteExpiredBefore(cutoff);
 }
 std::string RefreshTokenService::RefreshTokenHash(const std::string& refreshToken_origin) {
+    backend::logging::Scope operationLog{"RefreshTokenService", "RefreshTokenHash"};
     // 保存二进制哈希，默认长度为 32 字节。
     //使用BLAKE2b算法，相同的输入产生的hash相同
     unsigned char hash[crypto_generichash_BYTES];

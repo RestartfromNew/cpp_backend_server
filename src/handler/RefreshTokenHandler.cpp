@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/17.
 //
@@ -6,6 +7,7 @@
 RefreshTokenHandler::RefreshTokenHandler(RefreshTokenService &refreshTokenService,AccessTokenService &accessTokenService)
     :refreshTokenService_(refreshTokenService),accessTokenService_(accessTokenService){}
 HttpResponse RefreshTokenHandler::VerifyRefreshToken(const HttpRequest& request) {
+    backend::logging::Scope operationLog{"RefreshTokenHandler", "VerifyRefreshToken"};
     HttpResponse response;
     if (request.body.empty()) {
         return ErrorResponseMaker(

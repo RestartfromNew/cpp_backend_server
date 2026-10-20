@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/8.
 //
@@ -8,6 +9,7 @@
 Router::Router(const AuthMiddleWare &authMiddleWare):authMiddleWare_(authMiddleWare) {}
 void Router::addRoute(HttpMethod method,std::string path,Handler handler)
 {
+    backend::logging::Scope operationLog{"Router", "addRoute"};
     routes_.push_back(Route{
             .method = method,
             .path = std::move(path),
@@ -16,6 +18,7 @@ void Router::addRoute(HttpMethod method,std::string path,Handler handler)
     );
 }
 void Router::addProtectedRoute(HttpMethod method,std::string path,Protected_Handler handler) {
+    backend::logging::Scope operationLog{"Router", "addProtectedRoute"};
     protected_routes_.push_back(Protected_Route{
         .method = method,
         .path = std::move(path),
@@ -24,8 +27,10 @@ void Router::addProtectedRoute(HttpMethod method,std::string path,Protected_Hand
 }
 HttpResponse Router::route(const HttpRequest& request) const
 {
+    backend::logging::Scope operationLog{"Router", "route"};
     for (const auto& route : routes_) {
         if (route.method == request.method &&route.path == request.path) {
+            backend::logging::Logger::write(backend::logging::Level::Info, "http", "route_selected", {{"operation", route.path}});
             return route.handler(request);
         }
     }
@@ -34,8 +39,10 @@ HttpResponse Router::route(const HttpRequest& request) const
 }
 
 HttpResponse Router::protected_route(const HttpRequest& request) const {
+    backend::logging::Scope operationLog{"Router", "protected_route"};
     for (const auto& route : protected_routes_) {
         if (route.method == request.method &&route.path == request.path) {
+            backend::logging::Logger::write(backend::logging::Level::Info, "http", "route_selected", {{"operation", route.path}});
            const auto authResult=authMiddleWare_.authenticate(request);
             if (std::holds_alternative<AuthError>(authResult.result)) {
                 const auto& authError=std::get<AuthError>(authResult.result);

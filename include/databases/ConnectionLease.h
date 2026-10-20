@@ -7,6 +7,7 @@
 
 #include "databases/DatabaseConnection.h"
 #include "databases/DatabasePool.h"
+/** @brief 作用域租约：从池借出独占连接并在析构归还；事务回调使用同一连接，避免嵌套借连接。 */
 class ConnectionLease {
     public:
     ConnectionLease(DatabasePool &pool):pool_(pool) {

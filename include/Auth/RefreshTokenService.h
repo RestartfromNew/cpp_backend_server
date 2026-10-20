@@ -16,6 +16,7 @@ enum RefreshTokenStatus {
     Invalid,
     Expired
 };
+/** @brief 生成随机刷新凭据、哈希及验证数据库记录；Access Token 签发与设备登录完成流程由上层协调。 */
 class RefreshTokenService {
 public:
     RefreshTokenService(RefreshTokenRepository &refreshTokenRepository);

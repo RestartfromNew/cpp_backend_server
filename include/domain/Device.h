@@ -13,6 +13,7 @@ using TimePoint = std::chrono::system_clock::time_point;
 enum DeviceStatus {
     active,revoked,pending
 };
+/** @brief 设备资料值对象；设备属于用户，active 状态由数据库验证，不以客户端提交的 UUID 作为授权证明。 */
 struct Device {
     boost::uuids::uuid device_id;
     boost::uuids::uuid user_id;

@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/10/7.
 //
@@ -10,6 +11,7 @@ KeyService::KeyService(KeyRepository &keyRepository, UserRepository &userReposit
 
 }
 std::optional<bool> KeyService::verifyDeviceId(const boost::uuids::uuid &user_id,const boost::uuids::uuid &device_id) {
+    backend::logging::Scope operationLog{"KeyService", "verifyDeviceId"};
     auto result=keyRepository_.FindDeviceByDeviceId(user_id,device_id);
     if (result==std::nullopt) {
         return std::nullopt;
@@ -21,6 +23,7 @@ std::optional<bool> KeyService::verifyDeviceId(const boost::uuids::uuid &user_id
 }
 std::optional<std::vector<Device>> KeyService::fetchUserDevices(
     const boost::uuids::uuid& my_id, const boost::uuids::uuid& friend_id) {
+    backend::logging::Scope operationLog{"KeyService", "fetchUserDevices"};
     if (my_id != friend_id && !userRepository_.VerifyFriendShip(my_id, friend_id)) {
         return std::nullopt;
     }
@@ -35,6 +38,7 @@ std::string KeyService::registerNewDevice(
     const std::string& signed_prekey_public_hex,
     const std::string& signed_prekey_signature_hex
 ) {
+    backend::logging::Scope operationLog{"KeyService", "registerNewDevice"};
     try {
         const auto device = keyRepository_.RegisterNewDevice(
        user_id,
@@ -63,6 +67,7 @@ bool KeyService::uploadOneTimePrekeys(
     const boost::uuids::uuid& user_id,
     const boost::uuids::uuid& device_id,
     const std::unordered_map<int, std::string>& prekeys) {
+    backend::logging::Scope operationLog{"KeyService", "uploadOneTimePrekeys"};
     if (prekeys.empty() || prekeys.size() > 10) {
         throw std::invalid_argument("Expected 1 to 10 one-time prekeys");
     }
@@ -86,6 +91,7 @@ bool KeyService::uploadOneTimePrekeys(
 PrekeyClaimResult KeyService::getOneTimePrekey(
     const boost::uuids::uuid& my_id, const boost::uuids::uuid& friend_id,
     const boost::uuids::uuid& device_id) {
+    backend::logging::Scope operationLog{"KeyService", "getOneTimePrekey"};
     if (my_id != friend_id && !userRepository_.VerifyFriendShip(my_id, friend_id)) {
         return {PrekeyClaimStatus::NotFriends};
     }
@@ -97,5 +103,6 @@ PrekeyClaimResult KeyService::getOneTimePrekey(
     return keyRepository_.getOneTimeKey(my_id, friend_id, device_id);
 }
 std::optional<DeviceKeyBundle> KeyService::getDeviceKeyBundle(const boost::uuids::uuid& friend_id,const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id) {
+    backend::logging::Scope operationLog{"KeyService", "getDeviceKeyBundle"};
     return keyRepository_.getDeviceKeyBundle(friend_id,my_id,device_id);
 }

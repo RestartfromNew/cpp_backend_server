@@ -3,6 +3,7 @@
 #include "domain/LoginTicket.h"
 #include <boost/uuid/uuid_io.hpp>
 #include <stdexcept>
+// 协议边界集中映射完成登录结果；响应含 Token，日志只记录 HTTP 状态。
 inline HttpResponse loginTicketResponse(const CompletedLogin& login, bool registered = false) {
     switch (login.result.status) {
         case LoginTicketStatus::InvalidTicket:

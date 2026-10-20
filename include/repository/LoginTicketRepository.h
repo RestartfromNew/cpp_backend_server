@@ -2,6 +2,7 @@
 #include "domain/LoginTicket.h"
 #include "databases/DatabasePool.h"
 #include "repository/KeyRepository.h"
+/** @brief 持久化 ticket 哈希；完成登录时锁行、复查过期，并将消费、设备登记和刷新凭据写入放在同一事务。 */
 class LoginTicketRepository {
 public:
     LoginTicketRepository(DatabasePool& pool, KeyRepository& keys) : pool_(pool), keys_(keys) {}

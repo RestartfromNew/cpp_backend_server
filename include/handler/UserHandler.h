@@ -24,6 +24,7 @@
 
 
 class LoginTicketService;
+/** @brief 用户 HTTP 协议边界：检查 JSON，调用 Service，映射状态与错误；在线通知在持久化成功后进行。 */
 class UserHandler {
 public:
     explicit UserHandler(UserService& userService,RegisterService& registerService,

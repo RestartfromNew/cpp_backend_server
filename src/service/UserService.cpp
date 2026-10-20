@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/2.
 //
@@ -29,16 +30,19 @@ bool UserService::verifyPassword( const std::string &password_hash, const std::s
 std::optional<User>
 UserService::findUserByEmail(const std::string& email)
 {
+    backend::logging::Scope operationLog{"UserService", "findUserByEmail"};
     return repository_.findByEmail(email);
     //后面可能加上其它业务逻辑
 }
 
 std::optional<User> UserService::findUserByUserName(const std::string& username) {
+    backend::logging::Scope operationLog{"UserService", "findUserByUserName"};
     auto result=repository_.FindUserByUsername(username);
     return result;
 }
 std::optional<FriendshipRequestRecord> UserService::requestFriendship(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& friend_uuid,const std::string& message)
 {
+    backend::logging::Scope operationLog{"UserService", "requestFriendship"};
     try {
         auto result= repository_.CreateNewFriendship(my_uuid,friend_uuid,message);
         return result;
@@ -55,17 +59,20 @@ std::optional<FriendshipRequestRecord> UserService::requestFriendship(const boos
 
 }
 std::optional<std::vector<FriendshipRequestRecord>> UserService::fetchFriendshipRequest(const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserService", "fetchFriendshipRequest"};
     auto result=repository_.FetchUnprocessedRequest(my_uuid);
     return result;
 
 }
 std::vector<User> UserService::fetchFriends(const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserService", "fetchFriends"};
     return repository_.FetchFriends(my_uuid);
 }
 
 FriendRequestProcessResult UserService::processFriendshipRequest(
     const boost::uuids::uuid& my_uuid, const boost::uuids::uuid& request_id,
     const std::string& process) {
+    backend::logging::Scope operationLog{"UserService", "processFriendshipRequest"};
     FriendRequestAction action;
     if (process == "accepted") action = FriendRequestAction::Accept;
     else if (process == "rejected") action = FriendRequestAction::Reject;
@@ -76,6 +83,7 @@ FriendRequestProcessResult UserService::processFriendshipRequest(
     return repository_.processFriendshipRequest(my_uuid, request_id, action);
 }
 std::variant<bool,UserServiceErrorCode> UserService::revokeUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id,const std::string &password) {
+    backend::logging::Scope operationLog{"UserService", "revokeUserDevice"};
 
     auto passwordHashRecord=repository_.FindLoginRecordByUserId(my_uuid);
     if (passwordHashRecord==std::nullopt)
@@ -100,6 +108,7 @@ std::variant<bool,UserServiceErrorCode> UserService::revokeUserDevice(const boos
     throw std::logic_error("Unhandled RevokeDeviceResult");
 }
 std::variant<bool,UserServiceErrorCode> UserService::verifyUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id) {
+    backend::logging::Scope operationLog{"UserService", "verifyUserDevice"};
     try {
         auto result=repository_.VerifyUserDeviceRelation(my_uuid,device_id);
         return result;

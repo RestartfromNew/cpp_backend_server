@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 #include "repository/LoginTicketRepository.h"
 #include "repository/RefreshTokenRepository.h"
 #include "databases/ConnectionLease.h"
@@ -5,6 +6,7 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <stdexcept>
 bool LoginTicketRepository::issue(const boost::uuids::uuid& user_id, const std::string& hash) {
+    backend::logging::Scope operationLog{"LoginTicketRepository", "issue"};
     ConnectionLease lease{pool_};
     return lease.connection().withTransaction([&] {
         const std::string accountParameters[] = {boost::uuids::to_string(user_id)};
@@ -25,9 +27,11 @@ bool LoginTicketRepository::issue(const boost::uuids::uuid& user_id, const std::
 LoginTicketResult LoginTicketRepository::complete(const std::string& hash,
     const std::string& refresh_hash, const boost::uuids::uuid* device_id,
     const DeviceRegistrationInput* registration) {
+    backend::logging::Scope operationLog{"LoginTicketRepository", "complete"};
     if ((device_id == nullptr) == (registration == nullptr))
         throw std::invalid_argument("Choose exactly one login completion path");
     ConnectionLease lease{pool_};
+    // 一个回调覆盖 ticket 消费、设备与刷新凭据；失败由 withTransaction 整体回滚。
     return lease.connection().withTransaction([&]() -> LoginTicketResult {
         const std::string ticketParameters[] = {hash};
         auto ticket = lease.connection().execute(R"(

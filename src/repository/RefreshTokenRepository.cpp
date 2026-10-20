@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/16.
 //
@@ -23,6 +24,7 @@ namespace {
 RefreshTokenRepository::RefreshTokenRepository(DatabasePool &databasePool):databasePool_(databasePool){}
 //查
 std::optional<RefreshTokenResult> RefreshTokenRepository::getRefreshTokenRecord(const std::string &refreshToken_hash) {
+    backend::logging::Scope operationLog{"RefreshTokenRepository", "getRefreshTokenRecord"};
     const std::string parameters[]={refreshToken_hash};
     ConnectionLease lease(databasePool_);
     auto result=lease.connection().execute(R"(
@@ -54,6 +56,7 @@ std::optional<RefreshTokenResult> RefreshTokenRepository::getRefreshTokenRecord(
 void RefreshTokenRepository::insertRefreshToken(DatabaseConnection& connection,
     const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id,
     const std::string& refreshToken_hash) {
+    backend::logging::Scope operationLog{"RefreshTokenRepository", "insertRefreshToken"};
     const std::string parameters[] = {
         boost::uuids::to_string(user_id), boost::uuids::to_string(device_id), refreshToken_hash};
     auto result = connection.execute(R"(
@@ -66,6 +69,7 @@ void RefreshTokenRepository::insertRefreshToken(DatabaseConnection& connection,
 
 //改 标记为失效
 void RefreshTokenRepository::revokeRefreshToken(const std::string &refreshToken_hash) {
+    backend::logging::Scope operationLog{"RefreshTokenRepository", "revokeRefreshToken"};
     const std::string refresh_Parameters[]={refreshToken_hash};
     ConnectionLease lease(databasePool_);
     auto result=lease.connection().execute(R"(
@@ -79,6 +83,7 @@ void RefreshTokenRepository::revokeRefreshToken(const std::string &refreshToken_
 }
 //删
 void RefreshTokenRepository::deleteRefreshToken(const std::string &refreshToken_hash) {
+    backend::logging::Scope operationLog{"RefreshTokenRepository", "deleteRefreshToken"};
     const std::string refresh_Parameters[]={refreshToken_hash};
     ConnectionLease lease(databasePool_);
     auto result=lease.connection().execute(R"(
@@ -86,6 +91,7 @@ void RefreshTokenRepository::deleteRefreshToken(const std::string &refreshToken_
 
 }
 bool RefreshTokenRepository::rotate(const std::string& oldTokenHash,const std::string& newTokenHash) {
+    backend::logging::Scope operationLog{"RefreshTokenRepository", "rotate"};
     //更新token，必须一起成功或者一起回滚
     ConnectionLease lease(databasePool_);
     return lease.connection().withTransaction([&]() -> bool {
@@ -127,6 +133,7 @@ bool RefreshTokenRepository::rotate(const std::string& oldTokenHash,const std::s
 // 放在 RefreshTokenRepository.cpp 中。
 std::size_t RefreshTokenRepository::deleteExpiredBefore(TimePoint cutoff)
 {
+    backend::logging::Scope operationLog{"RefreshTokenRepository", "deleteExpiredBefore"};
     const auto seconds =std::chrono::duration_cast<std::chrono::seconds>(cutoff.time_since_epoch()).count();
     const std::string parameters[] = {std::to_string(seconds)};
     ConnectionLease lease(databasePool_);

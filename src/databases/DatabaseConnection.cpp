@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/2.
 //
@@ -107,6 +108,7 @@ bool DatabaseConnection::isAlive() const noexcept
 
 DatabaseResult DatabaseConnection::execute(std::string_view sql,std::span<const std::string> parameters)
 {
+    backend::logging::Scope operationLog{"DatabaseConnection", "execute"};
     requireConnection("DatabaseConnection::execute");
     //执行单条sql语句
     std::vector<const char*> parameterValues;
@@ -144,6 +146,7 @@ DatabaseResult DatabaseConnection::execute(std::string_view sql,std::span<const 
         //如果执行途中出现任何的错误，都会在这里抛出，记录在constrainName中
         const char* sqlState =PQresultErrorField(rawResult, PG_DIAG_SQLSTATE);
         const char* constraintName =PQresultErrorField(rawResult, PG_DIAG_CONSTRAINT_NAME);
+        backend::logging::Logger::write(backend::logging::Level::Error, "database", "query_failed", {{"code", sqlState ? sqlState : "QUERY_FAILED"}});
         throw DatabaseError{DatabaseErrorKind::Query,
             sqlState ? sqlState : "QUERY_FAILED",
             "PostgreSQL query failed: " +
@@ -157,6 +160,7 @@ DatabaseResult DatabaseConnection::execute(std::string_view sql,std::span<const 
 
 void DatabaseConnection::beginTransaction()
 {
+    backend::logging::Scope operationLog{"DatabaseConnection", "beginTransaction"};
     requireConnection("DatabaseConnection::beginTransaction");
     //连接成功，但是有正在执行的其它事务
     if (PQtransactionStatus(connection_.get()) != PQTRANS_IDLE) {
@@ -181,6 +185,7 @@ void DatabaseConnection::beginTransaction()
 
 void DatabaseConnection::commitTransaction()
 {
+    backend::logging::Scope operationLog{"DatabaseConnection", "commitTransaction"};
     requireConnection("DatabaseConnection::commitTransaction");
     if (PQtransactionStatus(connection_.get()) != PQTRANS_INTRANS) {
         throw DatabaseError{
@@ -196,6 +201,7 @@ void DatabaseConnection::commitTransaction()
 
 void DatabaseConnection::rollbackTransactionNoThrow() noexcept
 {
+    backend::logging::Scope operationLog{"DatabaseConnection", "rollbackTransactionNoThrow"};
     if (!connection_) {
         return;
     }
@@ -212,6 +218,7 @@ void DatabaseConnection::rollbackTransactionNoThrow() noexcept
         // 关闭连接，阻止后续复用不确定的事务状态。
         connection_.reset();
 
+        backend::logging::Logger::write(backend::logging::Level::Error, "database", "rollback_failed");
         // 有日志设施后，在这里记录回滚失败。
         // 日志操作自身也必须不向外抛异常。
     }

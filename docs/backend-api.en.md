@@ -1,6 +1,6 @@
 # Backend API Documentation
 
-Last updated: 2026-10-16.
+Last updated: 2026-10-20.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
@@ -12,9 +12,9 @@ This document describes the HTTP and WebSocket endpoints implemented in the curr
 | --- | --- | --- |
 | Domain entry point (default in this document) | `https://aittelegramapi.uk` | HTTPS domain configured by the user; DNS, certificates, and proxy configuration were not verified online during this task |
 | Local Windows access to WSL through Nginx | `http://localhost:8088` | Retained for local debugging, not for public clients |
-| Direct access to the C++ server | `http://localhost:8082` | current source binds to `0.0.0.0:8082`; a deployed systemd binary may differ |
+| Direct access to the C++ server | `http://localhost:8081` | current server uses port `8081`; a deployed systemd binary may differ |
 
-Append endpoint paths to the base URL, for example `https://aittelegramapi.uk/login_by_email`. There is no `/api` or `/v1` prefix. The base URL does not include `/login_by_email`; that is the login endpoint path. Existing authentication examples use the domain entry point; the PowerShell friendship examples in Section 12 use local port 8082.
+Append endpoint paths to the base URL, for example `https://aittelegramapi.uk/login_by_email`. There is no `/api` or `/v1` prefix. The base URL does not include `/login_by_email`; that is the login endpoint path. Existing authentication examples use the domain entry point; the PowerShell friendship examples in Section 12 use local port 8081.
 
 - Send JSON requests with `Content-Type: application/json`. The body must be a JSON object, not an array, string, or `null`. Handlers currently parse the body without enforcing Content-Type.
 - Field names are case-sensitive. Additional JSON fields are currently ignored.
@@ -311,7 +311,7 @@ These are PowerShell commands, not CMD. baseUrl must be a plain URL string, not 
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-$baseUrl = 'http://localhost:8082'
+$baseUrl = 'http://localhost:8081'
 
 # Existing active device of this account; replace before executing.
 $deviceId = 'f7ab7d41-9955-4a73-922d-7b7a80ebdac4'
@@ -570,10 +570,10 @@ $loginBody = @{
 } | ConvertTo-Json -Compress
 
 $login = Invoke-RestMethod -Method Post `
-    -Uri "http://localhost:8082/login_by_email" `
+    -Uri "http://localhost:8081/login_by_email" `
     -ContentType "application/json" -Body $loginBody
 
-$verified = Invoke-RestMethod -Method Post -Uri 'http://localhost:8082/device_verification' -ContentType 'application/json' -Body (@{
+$verified = Invoke-RestMethod -Method Post -Uri 'http://localhost:8081/device_verification' -ContentType 'application/json' -Body (@{
     login_ticket = $login.login_ticket
     device_id = '6b73d84c-f23f-4932-8b4c-d320913914e3'
 } | ConvertTo-Json -Compress)
@@ -581,7 +581,7 @@ $bobToken = $verified.access_token
 
 # Fetch pending requests and copy the desired request_id
 Invoke-RestMethod -Method Get `
-    -Uri "http://localhost:8082/fetch_unprocessed_friend_request" `
+    -Uri "http://localhost:8081/fetch_unprocessed_friend_request" `
     -Headers @{ authorization = "Bearer $bobToken" } |
     ConvertTo-Json -Depth 10
 
@@ -593,7 +593,7 @@ $processBody = @{
 
 # Fetch friends
 Invoke-RestMethod -Method Get `
-    -Uri "http://localhost:8082/fetch_friends" `
+    -Uri "http://localhost:8081/fetch_friends" `
     -Headers @{ authorization = "Bearer $bobToken" } |
     ConvertTo-Json -Depth 10
 ```
@@ -728,11 +728,11 @@ Implemented: envelope storage, cursor synchronization, batch receipt ACK, authen
 
 ### 18.1 Endpoint, upgrade and authentication
 
-Local example: `ws://127.0.0.1:8082/`. main listens on 0.0.0.0:8082. Public deployment should use a configured TLS proxy and WSS; proxy routes have not been verified here.
+Local example: `ws://127.0.0.1:8081/`. The current server uses port 8081. Public deployment should use a configured TLS proxy and WSS; proxy routes have not been verified here.
 
 ```http
 GET / HTTP/1.1
-Host: localhost:8082
+Host: localhost:8081
 Upgrade: websocket
 Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
@@ -755,6 +755,46 @@ Accept is SHA-1 of the client key concatenated with the WebSocket GUID, then Bas
 HttpSession forwards Upgrade:websocket to the Worker without HTTP Router path validation. Before101, the Worker authenticates the HTTP Authorization header. Missing/invalid tokens receive HTTP401 with invalid_access_token; expired tokens receive access_token_expired. It sends the JSON error and closes instead of upgrading. Sec-WebSocket-Key lookup is case-insensitive and requires a non-empty value; full method, Connection, Version and key-length validation is not implemented.
 
 Each application JSON still requires authorization or Authorization with Bearer followed by a space and a valid token. Lowercase takes precedence. Upgrade authentication does not replace message authentication. The Session binds verified user_id/device_id; supply the deviceID handshake header, not X-Device-Id. Device ownership and active state are checked before upgrade and in business transactions.
+
+### 18.1.1 Authentication execution stages
+
+| Stage | Current checks | Execution location |
+|---|---|---|
+| Before HTTP upgrade | JWT signature/claims/expiry; device ownership, active device/account | WebsocketWorker::acceptingSessions; device verification queries the database before 101 |
+| Before each business JSON is queued | Object payload, token string, JWT verification, token user equals Session user, string type | Dispatcher on the current Worker call path; JWT verification itself does not query the database |
+| Start of a recognized route Task | validateSessionRequest checks Session device ownership/state and request-device binding | ServiceThreadPool business thread; device verification still queries the database |
+| Business transaction | Operation-specific permissions and data constraints for store/sync/ACK | Service / Repository; these checks remain in place |
+
+All four recognized routes, including chat.newTextMessage_Test, check Session identity inside their Task. Sending binds sender_device_id; sync and ACK bind device_id. An A1 connection cannot operate as A2. The test route has no request-device comparison but still verifies the Session device. An unknown string type still produces no Task or reply.
+
+This moves execution of per-message device checks; it does not reduce their database-query count or introduce Redis/device-state caching. Handshake queries still execute on the Worker. JWT verification happens before enqueueing; Task uses the captured AuthResult without repeating JWT expiry validation. There is no timer that closes a connection solely because its token expires; subsequent business messages still require a valid token.
+
+### 18.1.2 Login and handshake testing
+
+1. POST /login_by_email returns code=login_success, login_ticket and expires_in=300, without final tokens.
+2. With a stored device_id, POST /device_verification with login_ticket and device_id. Otherwise POST /register_device with the ticket and Section 13's public-key fields.
+3. Save id, device_id, access_token and refresh_token from successful completion. Upgrade with access_token, never login_ticket or refresh_token.
+4. Send HTTP GET / with Upgrade headers, Authorization, deviceID, Sec-WebSocket-Key and Sec-WebSocket-Version: 13. deviceID is the HTTP header; JSON device fields keep their route-specific names.
+
+| Test input | Expected HTTP | error.code |
+|---|---|---|
+| Missing/invalid access token | 401 | invalid_access_token |
+| Token classified as expired | 401 | access_token_expired |
+| Valid token, nonexistent device | 403 | device_not_found |
+| Valid token, inactive device/account | 403 | device_not_active |
+| Valid token, another user's device | 403 | device_not_owned |
+| Valid token, owned active device | 101 | No JSON business body; WebSocket starts |
+
+Rejected upgrade JSON resembles {"error":{"code":"invalid_access_token","message":"Invalid or missing access token"}}; the HTTP connection then closes. Missing deviceID, malformed UUIDs and handshake database exceptions do not currently guarantee structured responses. Expiry may also be classified as invalid_access_token by the underlying JWT verifier; clients should refresh/re-authenticate for either token error.
+
+After rebuilding the local POSIX test project, run in Linux/WSL:
+
+```bash
+export ALICE_DEVICE_ID='YOUR_EXISTING_ACTIVE_DEVICE_UUID'
+./test 127.0.0.1 8081 --handshake-only
+```
+
+An existing Alice account is required; override defaults with ALICE_EMAIL / ALICE_PASSWORD. Without ALICE_DEVICE_ID, the test registers a new fixture device and prints its UUID; with it, the test uses device_verification. This mode needs no Bob/friendship and asserts missing-token 401, invalid-token 401, unknown-device 403, then authenticated 101 and sends Close. It does not assert a Close reply. Omit the flag for the original two-minute send test, which requires Bob as a friend with an active device. Checks on 2026-10-20 used simulated networking/dependencies, not a live deployed-server acceptance run.
 
 ### 18.2 Frame and JSON rules
 
@@ -827,7 +867,7 @@ success means persisted, not delivered, decrypted or read. Permission checks pre
 
 ### 18.6 Error responses: two actual shapes
 
-Object/authentication errors have no success/message fields:
+Common object/authentication errors have no success/message fields and may arrive before enqueueing or from a Task:
 
 ```json
 {"type":"error","error":{"code":"missing_authorization"}}
@@ -839,6 +879,14 @@ Object/authentication errors have no success/message fields:
 | missing_authorization | Authorization fields missing or not strings |
 | invalid_access_token | Empty string, wrong prefix or failed token validation |
 | access_token_expired | Expired token |
+| accessToken_do_not_match_session | Token user differs from bound Session user; spelling/case is intentional |
+| device_do_not_match_session | Task DB check rejects Session device ownership, existence or device/account state |
+| invalid_request | Missing/non-string type, after valid-token checks |
+| database_unavailable | Task identity check encounters a connection/SQLSTATE 08 error |
+| retry_later | Task identity check encounters 40001 / 40P01; no Service transaction retry at this stage |
+| internal_server_error | Other database/standard exception during Task identity checks |
+
+A missing/invalid request-device UUID returns the route-specific result with success=false and invalid_request; a valid UUID differing from the Session device returns session_device_mismatch with message Request device must match this WebSocket session. Sync and ACK use their own result types, not newTextMessage.result. Common identity errors carry no request correlation ID; handle type=error as well as route results.
 
 Formal message validation/business errors:
 
@@ -870,9 +918,9 @@ Retries keep the original message_id, recipient, protocol_version and packet. Do
 {"type":"newTextMessage.result","success":true,"id":"test-1"}
 ```
 
-The test route calls printId only: no envelope persistence, sequence, sending-device or friendship validation. id/message should be strings, but direct field conversions lack comprehensive error replies; task exceptions can produce only logs.
+The test route verifies Session identity inside its Task, then calls printId only: no envelope persistence, sequence, sending-device or friendship validation. id/message should be strings, but direct field conversions lack comprehensive error replies; task exceptions can produce only logs.
 
-Unknown type reaches UnKnown and returns without a reply: **unsupported_type is not currently emitted**. Missing/non-string type can throw before task dispatch, with no guaranteed application response. Clients must send a recognized string type; not every malformed input receives a structured result.
+Unknown string type reaches UnKnown without a reply: **unsupported_type is not emitted**. Missing/non-string type returns common error / invalid_request after valid-token and Session-user checks. Test-route enqueue rejection returns newTextMessage.result with success=false and server_busy.
 
 ### 18.8 Ping, Pong, Close and disconnects
 
@@ -999,7 +1047,7 @@ Neither route has request_id. Execute synchronization and ACK requests sequentia
 
 #### Connect the receiving device
 
-Log in through HTTP for login_ticket, then verify/register a device for access_token and device_id, then connect to `ws://localhost:8082/` locally or the deployed WSS endpoint such as `wss://aittelegramapi.uk/`. Supply handshake headers `Authorization: Bearer ACCESS_TOKEN` and `deviceID: DEVICE_UUID`. Current code reads deviceID, not X-Device-Id; ensure proxies forward it. Header lookup is case-insensitive; use deviceID consistently. The old device_id header is no longer the handshake device header. JSON fields remain device_id or the endpoint-specific sender_device_id/recipient_device_id.
+Log in through HTTP for login_ticket, then verify/register a device for access_token and device_id, then connect to `ws://localhost:8081/` locally or the deployed WSS endpoint such as `wss://aittelegramapi.uk/`. Supply handshake headers `Authorization: Bearer ACCESS_TOKEN` and `deviceID: DEVICE_UUID`. Current code reads deviceID, not X-Device-Id; ensure proxies forward it. Header lookup is case-insensitive; use deviceID consistently. The old device_id header is no longer the handshake device header. JSON fields remain device_id or the endpoint-specific sender_device_id/recipient_device_id.
 
 The server derives user_id from the token and verifies device ownership, active device and active account before registering the bound Session. Do not supply user_id as proof of identity. Token errors return401; device errors return403 with device_not_found, device_not_active or device_not_owned. Missing/malformed device_id and database exceptions currently reach the handshake exception boundary and close the connection without a guaranteed structured HTTP error.
 
@@ -1140,11 +1188,11 @@ Errors use the common error object in Section 3. After input validation, passwor
 
 Revocation locks the device row and updates status/revoked_at. Prekey upload and envelope writes lock and check the active device within their transactions. A writer that acquired its lock first may finish before revocation; new operations after revocation commits cannot pass the state check. This is not a database trigger preventing arbitrary direct SQL inserts.
 
-**This is not full logout or remote session termination.** Refresh tokens are not device-bound and are not revoked here; existing access tokens do not immediately expire. Revocation waits for all local Workers: 200 confirms server closure; 202 means closure is not yet confirmed. Previously buffered output may still arrive before closure. Account-level endpoints and device registration may still accept old tokens. New handshakes and operations that validate device status reject the revoked device.
+**This is not a global access-token blacklist.** Refresh tokens are device-bound and revoked with the device; existing access tokens do not immediately expire. Revocation waits for all local Workers: 200 confirms server closure; 202 means closure is not yet confirmed. Previously buffered output may still arrive before closure. Account-level Bearer endpoints may still accept old tokens; new-device registration requires a login_ticket. New handshakes and operations that validate device status reject the revoked device.
 
 #### Windows PowerShell test
 
-Use a disposable test device; this endpoint cannot reactivate it. The example uses the domain. For direct access to the current main, use http://localhost:8082.
+Use a disposable test device; this endpoint cannot reactivate it. The example uses the domain. For direct access to the current main, use http://localhost:8081.
 
 ```powershell
 $baseUrl = "https://aittelegramapi.uk"
@@ -1359,13 +1407,13 @@ Without-h this uses the local Unix socket; authentication depends on pg_hba.conf
 sudo -u postgres psql -d backend_dev -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA app TO back_dev_app; GRANT SELECT, INSERT, UPDATE ON app.login_tickets TO back_dev_app;'
 ```
 
-Substitute backend_manager/another role if appropriate; granting only the GUI administrator is insufficient. Preserve existing device/key/refresh privileges. No new environment variables: DATABASE_URL and JWT_SECRET remain required. Migrate/grant first, then build/deploy and update clients. Local examples use8082; the deployed service may differ. See [deployment notes](login-ticket-deployment.md).
+Substitute backend_manager/another role if appropriate; granting only the GUI administrator is insufficient. Preserve existing device/key/refresh privileges. No new environment variables: DATABASE_URL and JWT_SECRET remain required. Migrate/grant first, then build/deploy and update clients. Local examples use8081; the deployed service may differ. See [deployment notes](login-ticket-deployment.md).
 
 ### 22.3 Request errors versus internal failures
 
 | Symptom | Meaning/action |
 |---|---|
-| PowerShell invalid URI/hostname | No request sent; baseUrl must be plain http://localhost:8082 |
+| PowerShell invalid URI/hostname | No request sent; baseUrl must be plain http://localhost:8081 |
 | 404 route_not_found | Wrong method/path, different or stale binary |
 | Registration409 then login401 invalid_credentials | Conflict does not establish the expected account credentials |
 | Login500 with top-level code=internal_error | Login Handler executed; check ticket schema/permissions/database and other exceptions; registration has not run |

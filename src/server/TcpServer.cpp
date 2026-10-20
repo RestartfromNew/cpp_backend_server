@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/1.
 //
@@ -20,9 +21,11 @@ TcpServer::TcpServer(const std::string& ip,int port): ip_(ip),port_(port){}
 //server_fd等于-1表示当前没有有效的socket状态，大量Linux api用-1表示无效状态
 TcpServer::~TcpServer()=default;
 void TcpServer::start() {
+    backend::logging::Scope operationLog{"TcpServer", "start"};
     createSocket();
     bindSocket();
     listenSocket();
+    backend::logging::Logger::write(backend::logging::Level::Info, "tcp", "listener_started", {{"port", port_}});
 }
 void TcpServer::createSocket() {
     //表示ipv4或者ipv6,address family;type表示面向字节流；0表示根据前面两个参数自动选择协议

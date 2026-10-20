@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 #include "repository/EnvelopeRepository.h"
 #include "databases/ConnectionLease.h"
 #include "databases/DatabaseError.h"
@@ -51,6 +52,7 @@ EnvelopeRepository::EnvelopeRepository(DatabasePool& databasePool) : databasePoo
 NewMessageResult EnvelopeRepository::saveNewMessage(
     const boost::uuids::uuid& user_id, const boost::uuids::uuid& sender_device_id,
     const NewTextMessageRequest& request) {
+    backend::logging::Scope operationLog{"EnvelopeRepository", "saveNewMessage"};
     const std::string userId = boost::uuids::to_string(user_id);
     const std::string senderId = boost::uuids::to_string(sender_device_id);
     const std::string recipientId = boost::uuids::to_string(request.recipient_device_id);
@@ -58,6 +60,7 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
     const std::string packetHex = encodeHex(request.packet);
     ConnectionLease lease(databasePool_);
     return lease.connection().withTransaction([&]() -> NewMessageResult {
+        // 同一设备对的序号、幂等判定与 INSERT 必须共享事务锁；提交前不得发送在线通知。
         auto isolation = lease.connection().execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
         // Same canonical device pair, including reversed direction, uses one lock.
         // Hash collisions merely serialize unrelated pairs; constraints remain authoritative.
@@ -161,6 +164,7 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
 
 std::optional<EnvelopePage> EnvelopeRepository::syncEnvelopeRecord(
     const boost::uuids::uuid& user_id, const SyncEnvelopeRequest& request) {
+    backend::logging::Scope operationLog{"EnvelopeRepository", "syncEnvelopeRecord"};
     if (user_id.is_nil() || request.device_id.is_nil() || request.cursors.size() > 1000) {
         throw std::invalid_argument("Invalid synchronization request");
     }
@@ -189,6 +193,7 @@ std::optional<EnvelopePage> EnvelopeRepository::syncEnvelopeRecord(
         if (device.rowCount() == 0) {
             return std::nullopt; // Authorization denied, distinct from an empty page.
         }
+        // 游标为对端设备水位；无游标设备从 0 开始。分页还受编码后响应大小限制。
         constexpr std::size_t pageSize = 100;
         // Bound the eventual Base64 JSON reply, not just the number of records.
         constexpr std::size_t pageWireBudget = 512 * 1024;
@@ -243,6 +248,7 @@ std::optional<EnvelopePage> EnvelopeRepository::syncEnvelopeRecord(
 
 std::optional<std::vector<boost::uuids::uuid>> EnvelopeRepository::ackEnvelopes(
     const boost::uuids::uuid& user_id, const AckEnvelopeRequest& request) {
+    backend::logging::Scope operationLog{"EnvelopeRepository", "ackEnvelopes"};
     if (user_id.is_nil() || request.device_id.is_nil() ||
         request.envelope_ids.empty() || request.envelope_ids.size() > 100) {
         throw std::invalid_argument("Invalid acknowledgment request");

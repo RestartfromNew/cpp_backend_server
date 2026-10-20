@@ -19,6 +19,7 @@
  * The connection is non-copyable or movable.
  */
 
+/** @brief 独占 PGresult（不是 PGconn）；可移动不可复制。value 返回借用视图，不得超过本对象生命周期。 */
 class DatabaseResult {
 public:
     explicit DatabaseResult(PGresult* result);

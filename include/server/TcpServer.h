@@ -5,6 +5,7 @@
 
 #pragma once
 #include <string>
+/** @brief 管理监听 socket 与 accept；接受后的连接所有权交给线程池，业务和协议解析不在此层。 */
 class TcpServer {
 public:
     TcpServer(const std::string & ip,int port);

@@ -11,10 +11,12 @@
 #include "handler/Router.h"
 #include "websocket/WebSocketPool.h"
 
+/** @brief HTTP worker 数和待处理连接容量；max_capacity 是队列长度，不是动态扩容上限。 */
 struct ThreadPoolConfig {
     int min_capacity; // Fixed worker count.
     int max_capacity; // Queue capacity, not dynamic thread count.
 };
+/** @brief HTTP 接入线程池：有界连接队列、活跃 fd 与停止协调；升级连接移动交给 WebSocketPool。 */
 class ThreadPool {
 public:
     ThreadPool(const ThreadPoolConfig&, TcpServer&, Router&, WebSocketPool&);

@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/16.
 //
@@ -5,6 +6,7 @@
 #include "Auth/AccessTokenService.h"
 AccessTokenService::AccessTokenService(const std::string &secret):secret_(secret){}
 std::string AccessTokenService::generateAccessToken(const std::string& userId) {
+    backend::logging::Scope operationLog{"AccessTokenService", "generateAccessToken"};
     const auto now = std::chrono::system_clock::now();
     return jwt::create()
         .set_type("JWT")
@@ -17,6 +19,7 @@ std::string AccessTokenService::generateAccessToken(const std::string& userId) {
 }
 
 AccessTokenResult AccessTokenService::verify(const std::string& accessToken) const {
+    backend::logging::Scope operationLog{"AccessTokenService", "verify"};
     try {
         const auto decoded=jwt::decode(accessToken);
         if (!decoded.has_expires_at() ||!decoded.has_subject()) {

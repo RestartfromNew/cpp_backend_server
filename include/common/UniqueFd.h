@@ -14,6 +14,7 @@
  * Connection object is destroyed.
  */
 
+/** @brief 独占 Linux 文件描述符的 RAII 包装；移动转移所有权，析构关闭，不能复制或重复 close。 */
 class UniqueFd {
 public:
     UniqueFd()noexcept;

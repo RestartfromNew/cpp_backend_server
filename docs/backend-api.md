@@ -1,6 +1,6 @@
 # 服务器后端接口文档
 
-更新时间：2026-10-16。
+更新时间：2026-10-20。
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
@@ -12,9 +12,9 @@ English version: [Backend API Documentation](backend-api.en.md)。
 | --- | --- | --- |
 | 域名入口（本文默认） | `https://aittelegramapi.uk` | 用户已配置的 HTTPS 域名；本次未在线核验 DNS、证书或代理配置 |
 | Windows 本地通过 Nginx 访问 WSL | `http://localhost:8088` | 保留为本地调试入口，不是公网客户端应使用的地址 |
-| 直接访问 C++ 服务 | `http://localhost:8082` | 当前源码监听 `0.0.0.0:8082`；systemd部署副本的实际端口以部署二进制/配置为准 |
+| 直接访问 C++ 服务 | `http://localhost:8081` | 当前服务器端口为 `8081`；systemd部署副本的实际端口以部署二进制/配置为准 |
 
-以下接口路径拼接在基础地址之后，例如 `https://aittelegramapi.uk/login_by_email`。当前代码没有 `/api` 或 `/v1` 前缀。基础地址不包含 `/login_by_email`；该部分是登录接口路径。原有认证示例使用域名入口，第 12 节的 PowerShell 好友示例使用本地 8082 端口。
+以下接口路径拼接在基础地址之后，例如 `https://aittelegramapi.uk/login_by_email`。当前代码没有 `/api` 或 `/v1` 前缀。基础地址不包含 `/login_by_email`；该部分是登录接口路径。原有认证示例使用域名入口，第 12 节的 PowerShell 好友示例使用本地 8081 端口。
 
 - JSON 请求使用 `Content-Type: application/json`，请求体必须是 JSON 对象，不接受数组、字符串或 `null`。当前 Handler 实际按请求体解析，没有强制验证 Content-Type。
 - 字段名区分大小写；额外 JSON 字段目前被忽略。
@@ -307,11 +307,11 @@ X-User-Email: alice@example.com
 
 ## 9. Windows PowerShell：完成已有设备登录
 
-以下是PowerShell代码，不是CMD命令。baseUrl必须为纯URL字符串，不能写成Markdown链接 `[http://localhost:8082](...)`。先替换账号和该账号已有active设备；首次使用没有device_id时，不要执行设备验证，按13节登记新设备。
+以下是PowerShell代码，不是CMD命令。baseUrl必须为纯URL字符串，不能写成Markdown链接 `[http://localhost:8081](...)`。先替换账号和该账号已有active设备；首次使用没有device_id时，不要执行设备验证，按13节登记新设备。
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-$baseUrl = 'http://localhost:8082'
+$baseUrl = 'http://localhost:8081'
 
 # Existing active device of this account; replace before executing.
 $deviceId = 'f7ab7d41-9955-4a73-922d-7b7a80ebdac4'
@@ -561,10 +561,10 @@ $loginBody = @{
 } | ConvertTo-Json -Compress
 
 $login = Invoke-RestMethod -Method Post `
-    -Uri "http://localhost:8082/login_by_email" `
+    -Uri "http://localhost:8081/login_by_email" `
     -ContentType "application/json" -Body $loginBody
 
-$verified = Invoke-RestMethod -Method Post -Uri 'http://localhost:8082/device_verification' -ContentType 'application/json' -Body (@{
+$verified = Invoke-RestMethod -Method Post -Uri 'http://localhost:8081/device_verification' -ContentType 'application/json' -Body (@{
     login_ticket = $login.login_ticket
     device_id = '6b73d84c-f23f-4932-8b4c-d320913914e3'
 } | ConvertTo-Json -Compress)
@@ -572,7 +572,7 @@ $bobToken = $verified.access_token
 
 # 拉取待处理申请，复制所需的 request_id
 Invoke-RestMethod -Method Get `
-    -Uri "http://localhost:8082/fetch_unprocessed_friend_request" `
+    -Uri "http://localhost:8081/fetch_unprocessed_friend_request" `
     -Headers @{ authorization = "Bearer $bobToken" } |
     ConvertTo-Json -Depth 10
 
@@ -583,13 +583,13 @@ $processBody = @{
 } | ConvertTo-Json -Compress
 
 Invoke-RestMethod -Method Post `
-    -Uri "http://localhost:8082/process_friendship_request" `
+    -Uri "http://localhost:8081/process_friendship_request" `
     -Headers @{ authorization = "Bearer $bobToken" } `
     -ContentType "application/json" -Body $processBody
 
 # 拉取好友
 Invoke-RestMethod -Method Get `
-    -Uri "http://localhost:8082/fetch_friends" `
+    -Uri "http://localhost:8081/fetch_friends" `
     -Headers @{ authorization = "Bearer $bobToken" } |
     ConvertTo-Json -Depth 10
 ```
@@ -692,7 +692,7 @@ $body = @{
         public_key_hex = "06625dca527fc9b0fcad1acf661c5fed1e1cf85f25f403fa629b3e24b125d24a"
     })
 } | ConvertTo-Json -Depth 5
-Invoke-RestMethod -Method Post -Uri "http://localhost:8082/upload_one_time_prekeys" -Headers @{ authorization = "Bearer $accessToken" } -ContentType "application/json" -Body $body
+Invoke-RestMethod -Method Post -Uri "http://localhost:8081/upload_one_time_prekeys" -Headers @{ authorization = "Bearer $accessToken" } -ContentType "application/json" -Body $body
 ```
 
 本接口验证格式和设备归属，不证明客户端持有对应私钥。插入事务会再次校验 active 设备归属及账号状态，并通过 FOR SHARE 锁与设备撤销互斥。
@@ -735,7 +735,7 @@ $claimBody = @{
     friend_id = "3755178b-3b3d-4cf4-9e61-0aba62fb2875"
     device_id = "6b73d84c-f23f-4932-8b4c-d320913914e3"
 } | ConvertTo-Json -Compress
-Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_one_time_prekey" -Headers @{ authorization = "Bearer $($verified.access_token)" } -ContentType "application/json" -Body $claimBody
+Invoke-RestMethod -Method Post -Uri "http://localhost:8081/get_one_time_prekey" -Headers @{ authorization = "Bearer $($verified.access_token)" } -ContentType "application/json" -Body $claimBody
 ```
 
 示例 friend_id 须替换成好友列表实际返回的账号 UUID（测试密钥文件中的账号编号不一定等于数据库账号编号）。
@@ -789,7 +789,7 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_one_time_prekey" 
 
 PowerShell（按实际服务端口设置 baseUrl）：
 ```powershell
-$baseUrl = "http://localhost:8082"
+$baseUrl = "http://localhost:8081"
 $headers = @{ Authorization = "Bearer $accessToken" }
 $ownDevices = Invoke-RestMethod -Method Post -Uri "$baseUrl/user_devices" -Headers $headers -ContentType "application/json" -Body '{}'
 $friendBody = @{ target_user_id = $friendId } | ConvertTo-Json -Compress
@@ -813,7 +813,7 @@ BYTEA 编码为小写 hex。本接口按当前 DeviceKeyBundle 类型返回带�
 
 ```powershell
 $bundleBody = @{ friend_id = $friendId; device_id = $friendDeviceId } | ConvertTo-Json -Compress
-$bundle = Invoke-RestMethod -Method Post -Uri "http://localhost:8082/get_device_key_bundle" -Headers @{ authorization = "Bearer $($verified.access_token)" } -ContentType "application/json" -Body $bundleBody
+$bundle = Invoke-RestMethod -Method Post -Uri "http://localhost:8081/get_device_key_bundle" -Headers @{ authorization = "Bearer $($verified.access_token)" } -ContentType "application/json" -Body $bundleBody
 $bundle | ConvertTo-Json -Depth 5
 ```
 
@@ -827,13 +827,13 @@ $bundle | ConvertTo-Json -Depth 5
 
 ### 18.1 地址、握手与身份验证
 
-本地测试地址：`ws://127.0.0.1:8082/`。main 当前监听 0.0.0.0:8082。公网应通过已配置的 TLS 代理使用 WSS；本文未验证代理 WebSocket 路由配置。
+本地测试地址：`ws://127.0.0.1:8081/`。当前服务器使用 8081 端口。公网应通过已配置的 TLS 代理使用 WSS；本文未验证代理 WebSocket 路由配置。
 
 标准客户端发送升级请求，例如：
 
 ```http
 GET / HTTP/1.1
-Host: localhost:8082
+Host: localhost:8081
 Upgrade: websocket
 Connection: Upgrade
 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
@@ -856,6 +856,46 @@ Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 HttpSession 检测 Upgrade:websocket 后转交 Worker，不通过 HTTP Router 验证路径。Worker 在返回101之前验证请求头中的 Access Token；缺失或无效返回 HTTP401，JSON错误码为 invalid_access_token，过期为 access_token_expired，并关闭连接。Sec-WebSocket-Key 按头名称大小写不敏感查找且必须非空；当前没有完整检查方法、Connection、Version和Key长度。
 
 每条业务JSON仍需包含 authorization 或 Authorization 字符串，值为精确前缀 Bearer 加一个空格及有效Token。两者同时存在优先小写字段；类型错误不会回退大写字段。握手验证不替代报文验证，连接已绑定验证后的user_id和device_id；握手必须另带deviceID头，X-Device-Id不能替代它。设备归属和有效状态在业务事务中验证。
+
+### 18.1.1 认证在哪个阶段执行
+
+| 阶段 | 当前检查 | 执行位置 |
+|---|---|---|
+| HTTP 升级前 | Authorization 的 JWT 签名、声明和有效期；设备归属、设备 active、账号有效 | WebsocketWorker::acceptingSessions；设备验证会查库，成功才返回 101 |
+| 每条业务 JSON 入队前 | payload 对象、Token 字符串、JWT 验证、Token 用户与 Session 用户相同、type 为字符串 | Dispatcher；JWT 验证本身不查库，仍在当前 Worker 调用路径 |
+| 已识别路由的 Task 开始 | validateSessionRequest 验证 Session 设备归属/状态，并检查请求设备等于 Session 设备 | ServiceThreadPool 的业务线程；设备验证仍查库 |
+| 业务数据库事务 | 存储、同步、ACK 各自的权限和数据约束 | Service / Repository；没有因前面的检查而移除 |
+
+四个已识别路由（含 chat.newTextMessage_Test）均在 Task 内进行设备身份检查。发送使用 sender_device_id；同步和 ACK 使用 device_id。不能通过 A1 的连接操作 A2。测试路由没有请求设备字段比对，但仍验证 Session 设备。未知字符串 type 仍不排任务、不回复。
+
+本次只移动了报文设备验证的执行位置，没有减少每条业务消息的设备查库次数，也没有引入 Redis 或设备状态缓存。握手查库仍在 Worker；不能据此认为网络线程的全部数据库操作都已移除。JWT 在入队前验证，Task 使用捕获的 AuthResult，不再次验证 JWT 时间；当前没有基于 Token 到期时间主动关闭已建连接的定时器，下一条报文仍需有效 Token。
+
+### 18.1.2 握手与测试流程
+
+1. POST /login_by_email，取得 code=login_success、login_ticket、expires_in=300；此步不返回正式 Token。
+2. 有本机 device_id：POST /device_verification，JSON 提交 login_ticket 和 device_id。没有设备：POST /register_device，提交 login_ticket 及第 13 节公钥资料。
+3. 完成接口成功后保存 id、device_id、access_token、refresh_token；握手使用 access_token，不能使用 login_ticket 或 refresh_token。
+4. 对根路径 GET / 发起 HTTP Upgrade，带 Authorization、deviceID、Sec-WebSocket-Key 和 Sec-WebSocket-Version: 13。deviceID 是 HTTP 头名称，JSON 设备字段仍用各路由规定的名称。
+
+| 测试输入 | 预期 HTTP | error.code |
+|---|---|---|
+| 缺少/无效 Access Token | 401 | invalid_access_token |
+| 验证器识别为过期的 Token | 401 | access_token_expired |
+| 有效 Token、设备不存在 | 403 | device_not_found |
+| 有效 Token、设备/账号不可用 | 403 | device_not_active |
+| 有效 Token、设备属于其他用户 | 403 | device_not_owned |
+| 有效 Token、属于本人且有效的设备 | 101 | 无 JSON 业务响应体，开始 WebSocket 通信 |
+
+失败握手的 JSON 形如 {"error":{"code":"invalid_access_token","message":"Invalid or missing access token"}}，发送后关闭 HTTP 连接。deviceID 缺失、UUID 格式错误或握手查库抛异常目前不保证返回结构化响应。Token 过期也可能由底层 JWT 验证器先归入 invalid_access_token，客户端应对两种 Token 错误都执行刷新/重新登录。
+
+本地 test 项目已支持以下 Linux/WSL 命令（重新编译后执行）：
+
+```bash
+export ALICE_DEVICE_ID='YOUR_EXISTING_ACTIVE_DEVICE_UUID'
+./test 127.0.0.1 8081 --handshake-only
+```
+
+使用已有 Alice 测试账号；可用 ALICE_EMAIL / ALICE_PASSWORD 覆盖默认凭据。未设置 ALICE_DEVICE_ID 时会登记新测试设备并打印 ID；设置后走 device_verification。该模式无需 Bob/好友关系，依次断言无 Token 401、错误 Token 401、不存在设备 403、有效握手 101，然后发送 Close；不检查 Close 回包。省略参数则保留原两分钟发送测试，需要 Bob 好友和有效设备。2026-10-20 的检查使用模拟网络与依赖，尚未真实服务器联调，不能作为部署通过的证明。
 
 ### 18.2 Frame与JSON编码约定
 
@@ -946,7 +986,7 @@ success只表示持久化完成，不代表对方收到、解密或已读。权�
 
 ### 18.6 失败响应：两种实际结构
 
-路由前对象/鉴权错误不含success和message：
+公共对象/鉴权错误不含success和message；可能在入队前或 Task 内返回：
 
 ```json
 {"type":"error","error":{"code":"missing_authorization"}}
@@ -958,6 +998,14 @@ success只表示持久化完成，不代表对方收到、解密或已读。权�
 | missing_authorization | authorization/Authorization缺失或非字符串 |
 | invalid_access_token | 字符串为空、Bearer前缀不符、签名/Token校验失败 |
 | access_token_expired | Token过期 |
+| accessToken_do_not_match_session | Token 用户不同于连接绑定用户；保留代码中的大小写 |
+| device_do_not_match_session | Task 查库发现 Session 设备不存在、非本人或设备/账号不可用 |
+| invalid_request | type 缺失或非字符串；有效 Token 检查之后返回 |
+| database_unavailable | Task 身份检查数据库连接故障或 SQLSTATE 08 类 |
+| retry_later | Task 身份检查遇到 40001 / 40P01；本阶段直接返回，不进行 Service 的事务重试 |
+| internal_server_error | Task 身份检查的其他数据库或标准异常 |
+
+请求设备 UUID 缺失/无效返回对应路由的 `.result`、success=false、invalid_request；设备 UUID 有效但不等于 Session 设备时返回 session_device_mismatch，message 为 Request device must match this WebSocket session。同步和 ACK 使用各自的 result 类型，不会返回 newTextMessage.result。公共身份错误不含请求关联 ID；客户端也必须处理 type=error，而不只监听某一路由的 result。
 
 正式消息字段或业务错误：
 
@@ -993,9 +1041,9 @@ success只表示持久化完成，不代表对方收到、解密或已读。权�
 {"type":"newTextMessage.result","success":true,"id":"test-1"}
 ```
 
-测试路由仅调用printId，不持久化信封、不分配seq，不验证sender_device_id或好友关系。id/message应为字符串；代码直接转换字段，未提供完整格式错误回复，异常可能只有线程池日志而没有应用响应。
+测试路由先在 Task 内验证 Session 设备，成功后仅调用printId，不持久化信封、不分配seq，不验证sender_device_id或好友关系。id/message应为字符串；代码直接转换字段，未提供完整格式错误回复，异常可能只有线程池日志而没有应用响应。
 
-未知type在switch的UnKnown分支直接return，**当前没有unsupported_type回复**。type缺失/非字符串也没有专门检查，可能触发JSON转换异常，由Worker边界记录日志，无可靠应用错误回复。客户端必须发送已知且格式正确的type，不应假定每种非法消息都收到结果。
+未知字符串 type 在 switch 的 UnKnown 分支直接 return，**当前没有 unsupported_type 回复**。type 缺失/非字符串在有效 Token 及 Session 用户匹配检查后返回公共 error / invalid_request。测试路由入队失败同样返回 newTextMessage.result、success=false、server_busy。
 
 ### 18.8 Ping、Pong、Close与断线
 
@@ -1124,7 +1172,7 @@ envelope_ids必填，每次1–100个不重复的非零UUID字符串。事务验
 
 #### 建立接收连接
 
-客户端先通过HTTP登录取得login_ticket，再验证/登记设备取得access_token和device_id，再连接本地 `ws://localhost:8082/`；公网使用部署的WSS入口，例如 `wss://aittelegramapi.uk/`。握手请求必须带 `Authorization: Bearer ACCESS_TOKEN` 和 `deviceID: 当前设备UUID`。当前代码读取的是deviceID头，不是X-Device-Id；经过代理时需确保该头被转发。 请求头名称按大小写不敏感比较，推荐统一写deviceID；旧device_id头不再作为握手设备头。登录、发送、同步和ACK的JSON字段仍使用device_id或各接口定义的sender_device_id/recipient_device_id，不随请求头改名。
+客户端先通过HTTP登录取得login_ticket，再验证/登记设备取得access_token和device_id，再连接本地 `ws://localhost:8081/`；公网使用部署的WSS入口，例如 `wss://aittelegramapi.uk/`。握手请求必须带 `Authorization: Bearer ACCESS_TOKEN` 和 `deviceID: 当前设备UUID`。当前代码读取的是deviceID头，不是X-Device-Id；经过代理时需确保该头被转发。 请求头名称按大小写不敏感比较，推荐统一写deviceID；旧device_id头不再作为握手设备头。登录、发送、同步和ACK的JSON字段仍使用device_id或各接口定义的sender_device_id/recipient_device_id，不随请求头改名。
 
 服务器验证Token得到user_id，再验证设备归属、active状态及账号有效性，成功后创建绑定user_id/device_id的Session并登记在线目录。客户端不传user_id作为身份依据。Token错误返回401；设备不存在、非active/账号无效、归属错误分别返回403及device_not_found、device_not_active、device_not_owned。缺失或格式错误的device_id以及数据库异常，目前只由握手异常边界记录并关闭，不能保证有结构化HTTP错误响应。
 
@@ -1266,11 +1314,11 @@ password 必须是非空字符串，按原值验证，不去除空格；deviceID
 
 撤销事务锁定设备行并更新 status/revoked_at；预密钥上传和信封写入在事务内锁定设备并检查 active。已先取得锁的写入可以在撤销之前完成；撤销提交后的新操作不能通过状态检查。这不是禁止任意直接 SQL 写入的数据库触发器。
 
-**本接口不是完整的退出登录或远程踢下线。** Refresh Token 尚未绑定设备，不会在此撤销；已签发 Access Token 不会立即失效。撤销会等待本进程所有 Worker 确认关闭，200 表示服务端关闭已确认，202 表示尚未确认；关闭前已缓冲的数据可能到达；账号级接口和新设备注册仍可能接受旧 Token。新握手和有设备状态检查的业务会拒绝已撤销设备。
+**本接口不是全局 Access Token 黑名单机制。** Refresh Token 已绑定设备，并随设备撤销；已签发 Access Token 不会立即失效。撤销会等待本进程所有 Worker 确认关闭，200 表示服务端关闭已确认，202 表示尚未确认；关闭前已缓冲的数据可能到达；账号级 Bearer 接口仍可能接受旧 Token；新设备登记要求 login_ticket。新握手和有设备状态检查的业务会拒绝已撤销设备。
 
 #### Windows PowerShell 测试
 
-只对测试设备执行，撤销不可通过本接口恢复。以下示例使用域名；直连当前 main 可改为 http://localhost:8082。
+只对测试设备执行，撤销不可通过本接口恢复。以下示例使用域名；直连当前 main 可改为 http://localhost:8081。
 
 ```powershell
 $baseUrl = "https://aittelegramapi.uk"
@@ -1485,13 +1533,13 @@ sudo -u postgres psql -d backend_dev -v ON_ERROR_STOP=1 < database/migrations/00
 sudo -u postgres psql -d backend_dev -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA app TO back_dev_app; GRANT SELECT, INSERT, UPDATE ON app.login_tickets TO back_dev_app;'
 ```
 
-如果运行角色是backend_manager或其他角色，请替换授权对象，不要仅给DBeaver管理员授权。既有设备、密钥及refresh_tokens权限仍需保留。没有新增环境变量，仍使用DATABASE_URL、JWT_SECRET。先迁移/授权，再构建部署新二进制并更新客户端；本地示例为8082，部署服务端口以实际配置为准。详细测试命令见 [部署说明](login-ticket-deployment.md)。
+如果运行角色是backend_manager或其他角色，请替换授权对象，不要仅给DBeaver管理员授权。既有设备、密钥及refresh_tokens权限仍需保留。没有新增环境变量，仍使用DATABASE_URL、JWT_SECRET。先迁移/授权，再构建部署新二进制并更新客户端；本地示例为8081，部署服务端口以实际配置为准。详细测试命令见 [部署说明](login-ticket-deployment.md)。
 
 ### 22.3 区分请求错误与内部失败
 
 | 现象 | 意义/下一步 |
 |---|---|
-| PowerShell无效URI/未能解析主机名 | 请求尚未发出；baseUrl应是纯http://localhost:8082字符串 |
+| PowerShell无效URI/未能解析主机名 | 请求尚未发出；baseUrl应是纯http://localhost:8081字符串 |
 | 404 route_not_found | HTTP方法或路径错误，或请求到其他/旧二进制 |
 | 注册409后登录401 invalid_credentials | 注册冲突不能证明此邮箱属于预期账号，核对账号密码 |
 | 登录500、顶层code=internal_error | 已进入登录Handler；检查ticket表、权限、当前数据库和其他内部异常，尚未进入/register_device |

@@ -17,6 +17,7 @@
 #include "databases/DatabasePool.h"
 #include "databases/ConnectionLease.h"
 using TimePoint = std::chrono::system_clock::time_point;
+/** @brief 刷新凭据的内部数据库记录，包含哈希与失效时间；不能直接返回客户端或打印。 */
 struct RefreshTokenResult{
     boost::uuids::uuid id;
     boost::uuids::uuid user_id;
@@ -26,6 +27,7 @@ struct RefreshTokenResult{
     TimePoint created_at;
 };
 
+/** @brief 仅持久化刷新凭据哈希；插入入口复用调用方连接/事务，查询校验绑定设备和账号有效性。 */
 class RefreshTokenRepository {
     //负责是实现refresh token的数据库增删改查
     public:

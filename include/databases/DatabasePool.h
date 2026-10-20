@@ -15,6 +15,7 @@
 #include <chrono>
 #include <iostream>
 #include <databases/DatabaseConnection.h>
+/** @brief 连接数、借用等待、空闲回收与巡检间隔配置；各时间字段按当前实现使用毫秒。 */
 struct DatabasePoolConfig {
     int min_connections_;
     int max_connections;
@@ -22,6 +23,7 @@ struct DatabasePoolConfig {
     int idle_time;
     int check_interval;
 };
+/** @brief 互斥保护的 PostgreSQL 连接池；借出独占连接，归还前 reset，close 等待租约归还后释放资源。 */
 class DatabasePool {
 public:
     static DatabasePool* get_instance() {

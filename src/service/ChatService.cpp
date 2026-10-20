@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 #include "service/ChatService.h"
 #include "databases/DatabaseError.h"
 #include <exception>
@@ -10,6 +11,7 @@ void ChatService::printId(std::string id, std::string message) {
 }
 NewTextMessageResult ChatService::newTextMessage(const boost::uuids::uuid& user_id,
     const boost::uuids::uuid& sender_device_id, const NewTextMessageRequest& request) {
+    backend::logging::Scope operationLog{"ChatService", "newTextMessage"};
     if (user_id.is_nil() || sender_device_id.is_nil() || request.message_id.is_nil() ||
         request.recipient_device_id.is_nil() || sender_device_id == request.recipient_device_id ||
         request.packet.empty() || request.packet.size() > 64 * 1024 ||
@@ -20,6 +22,7 @@ NewTextMessageResult ChatService::newTextMessage(const boost::uuids::uuid& user_
     for (int attempt = 0; attempt < 3; ++attempt) {
         try {
             const auto result = envelope_repository_.saveNewMessage(user_id, sender_device_id, request);
+            backend::logging::Logger::write(backend::logging::Level::Debug, "chat", "store_result", {{"status", static_cast<int>(result.status)}, {"attempt", attempt + 1}});
             switch (result.status) {
                 case NewMessageStatus::Success:
                 case NewMessageStatus::Duplicate_request:
@@ -34,6 +37,7 @@ NewTextMessageResult ChatService::newTextMessage(const boost::uuids::uuid& user_
             }
             return {NewTextMessageStatus::InternalError};
         } catch (const DatabaseError& error) {
+            backend::logging::Logger::write(backend::logging::Level::Warn, "chat", "store_database_error", {{"code", error.code()}, {"attempt", attempt + 1}});
             // Log diagnostic codes, never SQL, token, packet or exception text.
             std::cerr << "[newTextMessage] SQLSTATE=" << error.code() << '\n';
             const bool transactionRetry = error.code() == "40001" || error.code() == "40P01";
@@ -57,6 +61,7 @@ NewTextMessageResult ChatService::newTextMessage(const boost::uuids::uuid& user_
 }
 std::optional<EnvelopePage> ChatService::syncEnvelopePage(
     const boost::uuids::uuid& user_id, const SyncEnvelopeRequest& request) {
+    backend::logging::Scope operationLog{"ChatService", "syncEnvelopePage"};
     // nullopt means permission denied; an empty page is successful synchronization.
     // Database exceptions remain available to the existing Task error boundary.
     return envelope_repository_.syncEnvelopeRecord(user_id, request);
@@ -64,5 +69,6 @@ std::optional<EnvelopePage> ChatService::syncEnvelopePage(
 
 std::optional<std::vector<boost::uuids::uuid>> ChatService::ackEnvelopes(
     const boost::uuids::uuid& user_id, const AckEnvelopeRequest& request) {
+    backend::logging::Scope operationLog{"ChatService", "ackEnvelopes"};
     return envelope_repository_.ackEnvelopes(user_id, request);
 }

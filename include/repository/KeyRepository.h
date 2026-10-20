@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include "domain/OneTimePrekey.h"
 
+/** @brief 设备与公钥/一次性预密钥持久化；领取预密钥使用事务，带连接的登记重载服从调用者事务。 */
 class KeyRepository {
 public:
     // Caller owns the transaction; no nested lease/commit.

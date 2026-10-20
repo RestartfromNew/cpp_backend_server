@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/8.
 //
@@ -11,6 +12,7 @@
 #include <optional>
 
 HttpResponse UserHandler::FetchFriends(const HttpRequest&, const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserHandler", "FetchFriends"};
     try {
         const auto friends = userService_.fetchFriends(my_uuid);
         nlohmann::json body;
@@ -41,6 +43,7 @@ HttpResponse UserHandler::FetchFriends(const HttpRequest&, const boost::uuids::u
 
 HttpResponse UserHandler::ProcessFriendshipRequest(
     const HttpRequest& request, const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserHandler", "ProcessFriendshipRequest"};
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
@@ -137,6 +140,7 @@ UserHandler::UserHandler(UserService& userService,RegisterService& registerServi
 ,loginService_(loginService),keyService_(keyService),webSocketPool_(web_socket_pool), tickets_(tickets){}
 
 HttpResponse UserHandler::Register(const HttpRequest &request) {
+    backend::logging::Scope operationLog{"UserHandler", "Register"};
     HttpResponse response;
     if (request.body.empty()) {
         return ErrorResponseMaker(
@@ -261,6 +265,7 @@ HttpResponse UserHandler::Register(const HttpRequest &request) {
     throw std::logic_error("Unhandled RegisterError");
 }
 HttpResponse UserHandler::LoginByEmail(const HttpRequest& request) {
+    backend::logging::Scope operationLog{"UserHandler", "LoginByEmail"};
     const auto makeResult = [](HttpStatus status, const char* code) {
         HttpResponse response;
         response.status = status;
@@ -319,6 +324,7 @@ HttpResponse UserHandler::LoginByEmail(const HttpRequest& request) {
 }
 HttpResponse UserHandler::getUser(const HttpRequest& request)
 {
+    backend::logging::Scope operationLog{"UserHandler", "getUser"};
     const auto emailHeader =request.headers.find("X-User-Email");
     HttpResponse response;
     response.headers["Content-Type"] = "application/json";
@@ -345,6 +351,7 @@ HttpResponse UserHandler::getUser(const HttpRequest& request)
 };
 
 HttpResponse UserHandler::verifyaccess(const HttpRequest& request) {
+    backend::logging::Scope operationLog{"UserHandler", "verifyaccess"};
     std::cout<<"access_token received"<<std::endl;
     HttpResponse response;
     response.status=HttpStatus::Ok;
@@ -353,6 +360,7 @@ HttpResponse UserHandler::verifyaccess(const HttpRequest& request) {
     return response;
 }
 HttpResponse UserHandler::FindUserByUsername(const HttpRequest& request,const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserHandler", "FindUserByUsername"};
     HttpResponse response;
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
@@ -395,6 +403,7 @@ HttpResponse UserHandler::FindUserByUsername(const HttpRequest& request,const bo
 
 }
 HttpResponse UserHandler::RequestFriendship(const HttpRequest& request,const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserHandler", "RequestFriendship"};
     HttpResponse response;
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
@@ -473,6 +482,7 @@ HttpResponse UserHandler::RequestFriendship(const HttpRequest& request,const boo
 }
 
 HttpResponse UserHandler::FetchUnprocessedFriendship(const HttpRequest& request,const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserHandler", "FetchUnprocessedFriendship"};
     HttpResponse response;
     try {
         nlohmann::json body;
@@ -507,6 +517,7 @@ HttpResponse UserHandler::FetchUnprocessedFriendship(const HttpRequest& request,
 }
 
 HttpResponse UserHandler::RevokeDevice(const HttpRequest& request,const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserHandler", "RevokeDevice"};
     if (request.body.empty()) {
         return ErrorResponseMaker(HttpStatus::Bad_Request,
             "missing_request_body", "Request body is required");
@@ -610,6 +621,7 @@ HttpResponse UserHandler::RevokeDevice(const HttpRequest& request,const boost::u
 }
 
 HttpResponse UserHandler::DeviceVerification(const HttpRequest& request) {
+    backend::logging::Scope operationLog{"UserHandler", "DeviceVerification"};
     if (request.body.empty()) return ErrorResponseMaker(HttpStatus::Bad_Request, "missing_request_body", "Request body is required");
     const auto body = nlohmann::json::parse(request.body, nullptr, false);
     if (!body.is_object()) return ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_json", "Request body must be a JSON object");

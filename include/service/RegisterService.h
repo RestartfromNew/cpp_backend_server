@@ -22,9 +22,11 @@ enum RegisterError{
     RegisterFailed,
     UsernameExists,
 };
+/** @brief 账号注册业务返回值；状态与可选用户数据的含义由 Handler 映射为 HTTP 响应。 */
 struct RegisterResult {
     std::variant<User,RegisterError> result;
 };
+/** @brief 账号注册校验与密码哈希业务；不处理 HTTP 编解码，密码和派生哈希均不得记录。 */
 class RegisterService {
 public:
     explicit RegisterService(UserRepository& repository);

@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/9/28.
 //
@@ -12,6 +13,7 @@ ServiceThreadPool::ServiceThreadPool(int count, ChatService& service)
 }
 
 void ServiceThreadPool::init() {
+    backend::logging::Scope operationLog{"ServiceThreadPool", "init"};
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!threads_.empty()) {
@@ -38,8 +40,10 @@ void ServiceThreadPool::init() {
                 try {
                     task();
                 } catch (const std::exception&) {
+                    backend::logging::Logger::write(backend::logging::Level::Error, "business_pool", "task_exception");
                     std::cerr << "[ServiceThreadPool] task failed\n";
                 } catch (...) {
+                    backend::logging::Logger::write(backend::logging::Level::Error, "business_pool", "task_unknown_exception");
                     std::cerr << "[ServiceThreadPool] unknown task failure\n";
                 }
             }
@@ -48,9 +52,11 @@ void ServiceThreadPool::init() {
 }
 
 void ServiceThreadPool::receiveTask(Task task) {
+    backend::logging::Scope operationLog{"ServiceThreadPool", "receiveTask"};
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (stop_) {
+            backend::logging::Logger::write(backend::logging::Level::Warn, "business_pool", "enqueue_rejected");
             throw std::runtime_error("ServiceThreadPool is stopping");
         }
         tasks_.push(std::move(task));
@@ -60,6 +66,7 @@ void ServiceThreadPool::receiveTask(Task task) {
 }
 
 void ServiceThreadPool::close() {
+    backend::logging::Scope operationLog{"ServiceThreadPool", "close"};
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stop_ = true;

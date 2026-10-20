@@ -22,6 +22,7 @@
 #include "domain/FriendRequestProcess.h"
 //负责接受service来的业务数据，包装成数据库需要形式，执行数据库连接和命令，返回service层处理需要的结果
 //借用但是不拥有数据库连接，不负责析构
+/** @brief 仅供密码验证使用的内部记录，含 password_hash；不能直接序列化成 API 响应或日志。 */
 struct PasswordLoginRecord {
     boost::uuids::uuid id;
     std::string display_name;
@@ -31,6 +32,7 @@ struct PasswordLoginRecord {
 };
 
 
+// 设备验证的可区分拒绝原因；由 DeviceRelationException 传递，避免按异常文本分支。
 enum class DeviceRelationError {
     NoSuchDevice,
     NotActivated,
@@ -43,6 +45,7 @@ enum class RevokeDeviceResult {
     AlreadyRevoked,
     DeviceNotActive
 };
+/** @brief 携带类型化设备关系拒绝原因；Service 通过 error() 映射状态，不能靠匹配 what() 文本判断。 */
 class DeviceRelationException : public std::runtime_error {
 public:
     explicit DeviceRelationException(DeviceRelationError error)
@@ -57,6 +60,7 @@ private:
     DeviceRelationError error_;
 };
 
+/** @brief 用户、好友请求及设备关系的持久化入口；参数化 SQL，业务结果交 Service，基础设施失败保留异常。 */
 class UserRepository {
 public:
     explicit UserRepository(DatabasePool &databasePool);

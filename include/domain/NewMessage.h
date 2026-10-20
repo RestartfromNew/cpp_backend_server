@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+/** @brief 发送信封的业务输入；packet 已由客户端加密/编码，重试必须保留相同 message_id 和字节。 */
 struct NewTextMessageRequest {
     boost::uuids::uuid message_id;
     boost::uuids::uuid recipient_device_id;

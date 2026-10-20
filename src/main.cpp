@@ -40,6 +40,7 @@
 namespace {
 // Block before starting ANY background thread. Main consumes signals as data;
 // no mutex, logging, or join is executed inside a signal handler.
+/** @brief Linux 信号 fd 生命周期包装；主线程同步接收停止请求，先停接入再等待后台线程退出。 */
 class StopSignals {
 public:
     StopSignals() {
@@ -73,8 +74,10 @@ private:
 };
 } // namespace
 
+#include "common/Logger.h"
 int main()
 {
+    backend::logging::Logger::write(backend::logging::Level::Info, "server", "process_start");
     try {
         StopSignals stopSignals; // Destroyed last, after all background threads.
         std::cout << std::unitbuf;
@@ -284,7 +287,7 @@ int main()
            }
        );
         //启动服务
-        TcpServer server{"0.0.0.0",8082};
+        TcpServer server{"0.0.0.0",8081};
         //TcpServer server{"0.0.0.0",8082};
         server.start();
         ThreadPoolConfig thread_pool_config{4,8};
@@ -295,6 +298,7 @@ int main()
         if (!web_socket_pool.init())
             throw std::runtime_error("websocket pool initialization failed");
         std::cout << "[server] ready on port 8081; workers=4; queue_capacity=8; Ctrl+C to stop\n";
+        backend::logging::Logger::write(backend::logging::Level::Info, "server", "ready");
         thread_pool.running([&stopSignals] { return stopSignals.requested(); });
         server.stop();
         std::cout << "[server] listener closed; waiting for workers\n";
@@ -303,9 +307,11 @@ int main()
         web_socket_pool.close();
         std::cout << "[server] all workers joined; closing database pool\n";
         databasePool.close();
+        backend::logging::Logger::write(backend::logging::Level::Info, "server", "shutdown_complete");
         std::cout << "[server] database pool closed; shutdown complete\n";
 
     } catch (const std::exception& error) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "server", "process_failed");
         std::cerr
             << "Server error: "
             << error.what()

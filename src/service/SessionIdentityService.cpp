@@ -1,3 +1,4 @@
+#include "common/Logger.h"
 //
 // Created by yangb on 2026/10/14.
 //
@@ -6,6 +7,7 @@
 #include <stdexcept>
 SessionIdentityService::SessionIdentityService(UserRepository &userRepository):user_repository_(userRepository){}
 IdentityState SessionIdentityService::verifySessionIdentity(const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id) {
+    backend::logging::Scope operationLog{"SessionIdentityService", "verifySessionIdentity"};
     try {
         auto result=user_repository_.VerifyUserDeviceRelation(user_id, device_id);
         if (result)
