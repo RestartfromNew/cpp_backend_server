@@ -1,10 +1,10 @@
 # 服务器后端接口文档
 
-更新时间：2026-11-03。
+更新时间：2026-11-08。
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
-> 文件功能规划（尚未实现）：头像走普通 HTTP，聊天附件经 WebSocket 申请上传许可、独立 HTTP 传输密文，再复用现有信封推送/拉取。详见 [最终设计](file-storage/README.md) 与 [协议草案](file-storage/attachment-protocol.md)。这些新 type/路径不属于下方已实现 API 清单。
+> 头像上传已在源码实现，接口见 [第 23 节](#23-上传或替换当前头像)。头像读取、删除和聊天加密附件仍见 [文件设计](file-storage/README.md) 与 [附件协议草案](file-storage/attachment-protocol.md)。
 
 本文描述当前源代码已经实现的 HTTP 与 WebSocket 接口，而不是计划中的最终设计。根据 `main`、Router、Handler、认证服务、Repository 和 HTTP 解析/响应实现整理。2026-10-16 已根据用户提供的运行输出记录部分设备 HTTP 接口实测结果，范围和未验证项见 20.1；不代表所有接口均已实测。部署的可执行文件若未重新编译，行为可能与当前源码不同。
 
@@ -24,11 +24,11 @@ English version: [Backend API Documentation](backend-api.en.md)。
 - 未匹配到方法和路径时返回 404，当前未区分 405 Method Not Allowed。
 - 普通HTTP接口每次响应后关闭连接，响应带 `Connection: close`；Nginx 到客户端的连接策略可能不同。
 - 带请求体的请求应提供正确的 `Content-Length`，curl 会自动生成。当前解析器没有实现 chunked 请求体。
-- 后端请求体长度上限为 1,048,576 字节；超限目前返回 400，不是 413。代理也可能在进入后端前拒绝请求。
+- 普通 HTTP 请求体上限为 1,048,576 字节，头像上传为 262,144 字节。声明长度超限时，解析器返回 413。代理也可能先拒绝请求。
 
 ### 请求头大小写的当前限制
 
-当前解析器保留请求头原始大小写，而下游使用区分大小写的 map 查找。联调时请使用下列精确写法：
+解析器识别 Content-Length 时忽略大小写。头像上传的 Authorization、Content-Type 和 Content-Encoding 也按不区分大小写处理，且拒绝重复字段。其他路由的部分 Handler 仍按原始大小写查找请求头，联调时可以使用：
 
 ```http
 Content-Type: application/json
@@ -37,7 +37,7 @@ authorization: Bearer ACCESS_TOKEN
 X-User-Email: alice@example.com
 ```
 
-其中 `Content-Length` 的值由客户端计算，不要复制示例中的 123。认证头当前接受 `authorization` 或 `Authorization`，并使用精确前缀 `Bearer `；其他大小写组合尚未统一支持。这是当前实现的兼容性缺陷，不是对客户端应长期施加的协议规则；经过 Nginx 时还需确认转发后的头名称。
+其中 `Content-Length` 由客户端计算。普通受保护路由可使用 `authorization` 或 `Authorization`，并使用精确前缀 `Bearer `。
 
 ## 2. 接口总览
 
@@ -61,6 +61,7 @@ X-User-Email: alice@example.com
 | GET | `/fetch_unprocessed_friend_request` | 必须 | 拉取收到的待处理申请，无需 Body |
 | POST | `/process_friendship_request` | 必须 | 接受、拒绝或取消申请 |
 | GET | `/fetch_friends` | 必须 | 拉取当前用户的好友列表，无需 Body |
+| POST | `/upload_avatar` | 必须 | 上传 512×512 JPEG 并替换当前头像 |
 
 表中“必须”指Authorization中的正式Access Token；login_ticket表示JSON请求体认证，不能用普通Bearer Token替代。
 
@@ -94,7 +95,8 @@ X-User-Email: alice@example.com
 
 | HTTP 状态 | code | 条件 |
 | --- | --- | --- |
-| 400 | `invalid_http_request` | HTTP 解析器返回错误，包括 Content-Length 无效或超出上限 |
+| 400 | `invalid_http_request` | HTTP 解析器返回错误，例如 Content-Length 无效或重复 |
+| 413 | `request_body_too_large` / `avatar_too_large` | 声明的请求体长度超出对应路由的上限 |
 | 404 | `route_not_found` | 方法和路径未匹配任何路由 |
 | 503 | `service_unavailable` | 请求处理过程中出现 DatabaseErrorKind::Connection |
 | 500 | `internal_server_error` | 未被业务处理的数据库查询、约束、数据转换错误或其他标准异常 |
@@ -1562,7 +1564,7 @@ SELECT
 ticket_table为NULL表示此连接看不到该表；权限为false需要授权。以postgres运行时得到的true不能证明应用角色也有权限。常见SQLSTATE：42P01表不存在；42501权限不足（包括FOR SHARE相关权限）；42703字段不存在。不能只凭客户端internal_error确定具体哪一种。
 
 ```bash
-sudo journalctl -u backend-server -n 80 --no-pager
+sudo journalctl -u cpp-backend-test.service -n 80 --no-pager
 ```
 
 登录Handler目前将异常转换为code但没有打印具体SQLSTATE，因此日志可能没有细节。诊断日志应只补错误码/阶段，不能输出密码、ticket、Token或带凭据的DATABASE_URL。文档不会把客户端500当作已确认的数据库故障。
@@ -1572,3 +1574,61 @@ sudo journalctl -u backend-server -n 80 --no-pager
 仓库有login_ticket_isolated_test，覆盖模拟依赖下的过期、并发一次消费及回滚；tests/login_ticket_http_test.py可对已迁移的测试服务器执行真实HTTP验收。未配置测试URL和账号时该脚本跳过，不代表真实数据库测试成功。本次只核对源码和文档，没有执行目标数据库迁移、授权或部署。
 
 清理任务尚未自动调度。维护角色可按审计保留策略删除过期ticket；未清理不会让过期ticket恢复有效。API不会返回数据库ticket_hash，也没有ticket查询/续期/重放取回Token接口。
+
+## 23. 上传或替换当前头像
+
+`POST /upload_avatar` 需要 `Authorization: Bearer <access_token>`。使用 `/login_by_email` 取得 `login_ticket` 后，通过 `/device_verification` 或 `/register_device` 完成登录并取得 Access Token。
+
+| 请求项 | 要求 |
+| --- | --- |
+| `Content-Type` | `image/jpeg` |
+| 正文 | 原始 JPEG 二进制，宽高都必须是 `512` 像素，大小为 `1` 至 `262144` 字节 |
+| `Content-Length` | JPEG 正文的实际字节数。`curl.exe --data-binary` 会自动设置 |
+| `Content-Encoding` | 可省略，也可使用 `identity` |
+
+客户端先裁剪、缩放并编码成 JPEG，然后直接发送文件字节。后端用 TurboJPEG 检查实际格式、尺寸和解码完整性，通过后同步保存原始 JPEG。账号归属取自已认证身份。文件写完并发布、数据库绑定提交成功后才返回 `200 OK`。每次替换生成新头像 ID，并撤销上一张头像。
+
+在 Windows PowerShell 中，使用同一窗口里完成设备登录后取得的 `$accessToken` 执行上传。将 `$avatarPath` 改为本地测试图的完整路径。
+
+```powershell
+$baseUrl = 'http://127.0.0.1:8081'
+$avatarPath = 'C:\path\to\avatar-512.jpg'
+curl.exe -i --request POST "$baseUrl/upload_avatar" `
+    --header "Authorization: Bearer $accessToken" `
+    --header 'Content-Type: image/jpeg' `
+    --data-binary "@$avatarPath"
+```
+
+成功响应使用 `application/json`。
+
+```json
+{"avatar":{"id":"a7c2d8e1-4f56-47b9-8a31-2d6e390bc123","size_bytes":18675}}
+```
+
+| HTTP 状态 | `error.code` | 条件 |
+| --- | --- | --- |
+| 400 | `invalid_http_request` | 请求头或消息长度无效，包含重复关键请求头或 `Transfer-Encoding` |
+| 400 | `missing_request_body` | 正文为空 |
+| 400 | `invalid_avatar_jpeg` | JPEG 头或图像解码失败 |
+| 401 | `invalid_access_token` / `access_token_expired` | 缺少、无效或过期的 Access Token |
+| 403 | `avatar_user_unavailable` | 账号不存在或未启用 |
+| 413 | `avatar_too_large` | 正文超过 256 KiB |
+| 415 | `unsupported_avatar_content_type` | 缺少 `image/jpeg` 媒体类型或类型不符 |
+| 415 | `unsupported_avatar_content_encoding` | 使用了非 `identity` 的 HTTP 内容编码 |
+| 422 | `invalid_avatar_dimensions` | JPEG 宽或高不等于 512 |
+| 500 | `avatar_storage_failed` | 文件写入、同步或发布失败 |
+| 500 | `avatar_save_failed` | 数据库保存失败 |
+| 503 | `avatar_decoder_unavailable` | JPEG 解码器初始化失败 |
+| 503 | `database_unavailable` | 数据库连接异常，保存结果可能需要核对 |
+
+### 23.1 test 环境核对
+
+部署前确认数据库已有 `app.avatars` 和 `app.user_avatars`，后端数据库角色有对应权限。test 运行单位是 `cpp-backend-test.service`，已配置从 `/etc/cpp-backend-test-storage.env` 读取 `FILE_STORAGE_ROOT=/home/developer/.local/share/cpp-backend-test/files`。存储根目录须已存在，服务账号须能进入该路径并写入头像的临时目录与正式目录。JPEG 发布到根目录下的 `objects/avatars/<UUID前两位>/<接下来两位>/<UUID>.jpg`。
+
+替换构建产物后重启 `cpp-backend-test.service`。可用 `cmp` 比较本次构建产物与该服务 `MainPID` 的 `/proc/<PID>/exe`。访问 `/` 返回 `404 route_not_found` 仅验证 HTTP 服务可达。头像上传需另外通过以上带认证的请求验证。
+
+```bash
+sudo journalctl -u cpp-backend-test.service -n 50 --no-pager
+```
+
+出现 `avatar_storage_failed` 时检查服务日志中的 `code` 和 `reason`。当前 API 源码已提供上传入口。头像读取和删除仍是后续接口。

@@ -1,10 +1,10 @@
 # Backend API Documentation
 
-Last updated: 2026-11-03.
+Last updated: 2026-11-08.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
-> Planned, not implemented: avatars use ordinary HTTP; encrypted attachments request permission over WebSocket, transfer file bytes over separate HTTP, and reuse device envelopes for online/offline messages. See the [design](file-storage/README.md) and [protocol draft](file-storage/attachment-protocol.md) (Chinese). These proposed types/routes are not part of the implemented API list below.
+> Avatar upload is implemented in the current source. See [Section 23](#23-upload-or-replace-the-current-avatar). Avatar retrieval, deletion, and encrypted attachments remain planned. See the [file storage design](file-storage/README.md) and [attachment protocol draft](file-storage/attachment-protocol.md) (Chinese).
 
 This document describes the HTTP and WebSocket endpoints implemented in the current source code, not a planned final design. It is based on main, Router, Handlers, authentication services, Repositories, and HTTP parsing/response code. Section 20.1 records limited device HTTP tests from user-supplied output on 2026-10-16; other endpoints are not thereby verified. A deployed executable that has not been rebuilt may behave differently from the current source.
 
@@ -24,11 +24,11 @@ Append endpoint paths to the base URL, for example `https://aittelegramapi.uk/lo
 - An unmatched method/path returns 404. The router does not currently distinguish 405 Method Not Allowed.
 - Ordinary HTTP endpoints close the connection after each response and sends `Connection: close`. Nginx may use a different connection policy toward clients.
 - Requests with bodies must supply a correct `Content-Length`; curl calculates it automatically. The parser does not implement chunked request bodies.
-- The backend body limit is 1,048,576 bytes. Exceeding it currently returns 400, not 413. A proxy may also reject requests before they reach the backend.
+- The ordinary HTTP body limit is 1,048,576 bytes. Avatar uploads are limited to 262,144 bytes. The parser returns 413 when the declared length exceeds the limit. A proxy may reject requests first.
 
 ### Current Header Case Limitation
 
-The parser preserves header-name case, while downstream code performs case-sensitive map lookups. Use these exact spellings during integration testing:
+The parser recognizes Content-Length case-insensitively. For avatar uploads it also handles Authorization, Content-Type, and Content-Encoding case-insensitively and rejects duplicates. Some other handlers still look up the original header spelling. These spellings work for integration tests:
 
 ```http
 Content-Type: application/json
@@ -37,7 +37,7 @@ authorization: Bearer ACCESS_TOKEN
 X-User-Email: alice@example.com
 ```
 
-The client must calculate Content-Length; do not copy the example value 123. Authentication accepts `authorization` or `Authorization` and the exact prefix `Bearer `; arbitrary header-case variants are not yet supported. This is an implementation compatibility defect, not a protocol rule that clients should permanently have to follow. When using Nginx, also check the header names actually forwarded to the backend.
+Let the client calculate `Content-Length`. For ordinary protected routes, use `authorization` or `Authorization` and the exact prefix `Bearer `.
 
 ## 2. Endpoint Overview
 
@@ -61,6 +61,7 @@ The client must calculate Content-Length; do not copy the example value 123. Aut
 | GET | `/fetch_unprocessed_friend_request` | Required | Fetch incoming pending requests; no body |
 | POST | `/process_friendship_request` | Required | Accept, reject, or cancel a request |
 | GET | `/fetch_friends` | Required | Fetch the authenticated user's friends; no body |
+| POST | `/upload_avatar` | Required | Upload a 512×512 JPEG and replace the current avatar |
 
 `/refresh_token` is currently registered as GET and requires a JSON body. This documents the existing behavior, not a recommended design. It should be migrated to POST.
 
@@ -94,7 +95,8 @@ These codes apply to endpoints requiring JSON bodies, but /login_by_email return
 
 | HTTP status | code | Condition |
 | --- | --- | --- |
-| 400 | `invalid_http_request` | HTTP parser error, including invalid or oversized Content-Length |
+| 400 | `invalid_http_request` | HTTP parser error, such as an invalid or duplicate Content-Length |
+| 413 | `request_body_too_large` / `avatar_too_large` | Declared request length exceeds the route's limit |
 | 404 | `route_not_found` | No matching method/path |
 | 503 | `service_unavailable` | DatabaseErrorKind::Connection during request processing |
 | 500 | `internal_server_error` | Unhandled database query, constraint, data-conversion error, or other standard exception |
@@ -1436,7 +1438,7 @@ SELECT
 NULL ticket_table indicates no visible relation at that name; false privileges require grants. Superuser results do not establish application-role access. Common SQLSTATEs:42P01 missing relation,42501 insufficient privilege (including locking queries),42703 missing column. The generic client code cannot distinguish them.
 
 ```bash
-sudo journalctl -u backend-server -n 80 --no-pager
+sudo journalctl -u cpp-backend-test.service -n 80 --no-pager
 ```
 
 The current login Handler hides exception details without logging SQLSTATE, so journal output may be insufficient. Add only stage/error-code diagnostics, never passwords/tickets/tokens or credential-bearing DATABASE_URL. A client500 alone is not proof of a particular database fault.
@@ -1446,3 +1448,61 @@ The current login Handler hides exception details without logging SQLSTATE, so j
 login_ticket_isolated_test covers expiry/concurrent single use/rollback with simulated dependencies. tests/login_ticket_http_test.py is opt-in live HTTP acceptance against a migrated test service. Missing test environment skips that script, not a live DB pass. This documentation task did not migrate/grant/deploy the target service.
 
 Cleanup is not automatically scheduled; expire/delete rows under your retention policy. Expired rows remain invalid before cleanup. No API exposes ticket_hash or renews/replays tickets to recover final tokens.
+
+## 23. Upload or replace the current avatar
+
+`POST /upload_avatar` requires `Authorization: Bearer <access_token>`. Obtain a `login_ticket` from `/login_by_email`, then complete login through `/device_verification` or `/register_device` to obtain an Access Token.
+
+| Request item | Requirement |
+| --- | --- |
+| `Content-Type` | `image/jpeg` |
+| Body | Raw JPEG bytes. Width and height must each be `512` pixels. The body must contain `1` to `262144` bytes |
+| `Content-Length` | The exact JPEG byte count. `curl.exe --data-binary` sets this automatically |
+| `Content-Encoding` | Omit it or use `identity` |
+
+Crop, resize, and encode the image as JPEG on the client before sending the file bytes. The server uses TurboJPEG to check format, dimensions, and full decoding, then saves the supplied JPEG synchronously. The authenticated identity determines ownership. The server returns `200 OK` after publishing the file and committing the database binding. Each replacement creates a new avatar ID and revokes the previous avatar.
+
+In Windows PowerShell, use the `$accessToken` obtained after completing device login in the same session. Set `$avatarPath` to the full path of your local test image.
+
+```powershell
+$baseUrl = 'http://127.0.0.1:8081'
+$avatarPath = 'C:\path\to\avatar-512.jpg'
+curl.exe -i --request POST "$baseUrl/upload_avatar" `
+    --header "Authorization: Bearer $accessToken" `
+    --header 'Content-Type: image/jpeg' `
+    --data-binary "@$avatarPath"
+```
+
+The success response uses `application/json`.
+
+```json
+{"avatar":{"id":"a7c2d8e1-4f56-47b9-8a31-2d6e390bc123","size_bytes":18675}}
+```
+
+| HTTP status | `error.code` | Condition |
+| --- | --- | --- |
+| 400 | `invalid_http_request` | Malformed headers or body framing, including duplicate critical headers or `Transfer-Encoding` |
+| 400 | `missing_request_body` | Empty body |
+| 400 | `invalid_avatar_jpeg` | JPEG header parsing or image decoding failed |
+| 401 | `invalid_access_token` / `access_token_expired` | Missing, invalid, or expired Access Token |
+| 403 | `avatar_user_unavailable` | Account is missing or inactive |
+| 413 | `avatar_too_large` | Body exceeds 256 KiB |
+| 415 | `unsupported_avatar_content_type` | Missing or mismatched `image/jpeg` media type |
+| 415 | `unsupported_avatar_content_encoding` | HTTP content encoding other than `identity` |
+| 422 | `invalid_avatar_dimensions` | JPEG width or height differs from 512 |
+| 500 | `avatar_storage_failed` | File write, sync, or publication failed |
+| 500 | `avatar_save_failed` | Database save failed |
+| 503 | `avatar_decoder_unavailable` | JPEG decoder initialization failed |
+| 503 | `database_unavailable` | Database connection error. The save outcome may need verification |
+
+### 23.1 Test environment checks
+
+Before deployment, verify that `app.avatars` and `app.user_avatars` exist and that the backend database role has the required grants. The test unit is `cpp-backend-test.service`. It loads `FILE_STORAGE_ROOT=/home/developer/.local/share/cpp-backend-test/files` from `/etc/cpp-backend-test-storage.env`. The root must exist and the service account must be able to traverse it and write to the staging and final avatar directories. The server publishes JPEGs under `objects/avatars/<first two UUID characters>/<next two UUID characters>/<UUID>.jpg`.
+
+Restart `cpp-backend-test.service` after replacing the deployed binary. Use `cmp` to compare the new build with `/proc/<PID>/exe` for the unit's `MainPID`. A `404 route_not_found` response at `/` confirms HTTP reachability. Test avatar upload separately with the authenticated request above.
+
+```bash
+sudo journalctl -u cpp-backend-test.service -n 50 --no-pager
+```
+
+For `avatar_storage_failed`, check the service log's `code` and `reason` fields. Avatar upload is implemented in the current source. Avatar retrieval and deletion remain planned.
