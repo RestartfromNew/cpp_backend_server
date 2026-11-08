@@ -92,7 +92,7 @@ int main()
         //组装组件
         DatabasePoolConfig config{};
         config.min_connections_ = 4;
-        config.max_connections = 8;
+        config.max_connections = 128;
         config.acquire_time = 5000;
         config.idle_time = 60000;
         config.check_interval = 100;
@@ -123,10 +123,10 @@ int main()
         LoginTicketService loginTickets{loginTicketRepository, accessTokenService, refreshTokenService};
         LoginService loginService{userRepository, loginTickets};
         KeyService keyService{keyRepository,userRepository};
-        WebSocketPoolConfig web_socket_pool_config{4,100};
+        WebSocketPoolConfig web_socket_pool_config{8,100};
         EnvelopeRepository envelopeRepository{databasePool};
         ChatService chat_service{envelopeRepository};
-        ServiceThreadPool service_thread_pool(2, chat_service);
+        ServiceThreadPool service_thread_pool(4, chat_service);
         SessionIdentityService sessionIdentityService{userRepository};
         WebSocketDispatcher web_socket_dispatcher(service_thread_pool,authMiddleWare,sessionIdentityService);
         WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher,authMiddleWare,sessionIdentityService);
@@ -167,6 +167,13 @@ int main()
             "/friend_devices",
             [&chatHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
                 return chatHandler.fetchUserDevices(request, user_id);
+            }
+        );
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/upload_avatar",
+            [&userHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return userHandler.uploadAvatar(request, user_id);
             }
         );
         router.addProtectedRoute(
@@ -290,7 +297,7 @@ int main()
         TcpServer server{"0.0.0.0",8081};
         //TcpServer server{"0.0.0.0",8082};
         server.start();
-        ThreadPoolConfig thread_pool_config{4,8};
+        ThreadPoolConfig thread_pool_config{4,128};
         ThreadPool thread_pool(thread_pool_config,server,router,web_socket_pool);
         service_thread_pool.init();
         if (!thread_pool.init())

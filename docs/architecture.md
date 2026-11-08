@@ -1,4 +1,13 @@
 # 整体架构设计
+
+## 2026-11-03：文件模块扩展方案（待实现）
+
+头像沿用普通 HTTP → Handler → AvatarService → AvatarRepository，磁盘操作提交共用磁盘 I/O 池；不接入 file_uploads。聊天附件使用 WebSocket 控制许可、状态、续签与取消，独立 HTTP UploadReactor 接收密文，经有界队列写盘。完成后仍由设备信封传递加密描述，文件本体另走 HTTP 下载。维护线程挑选清理对象，磁盘池执行删除。
+
+完整设计与 SQL 草案见 [file-storage](file-storage/README.md) 和 [附件协议](file-storage/attachment-protocol.md)。下方保留基础分层，新增 type/路由尚未实现。
+
+## 基础请求分层
+
 Client
 
 ↓

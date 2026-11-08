@@ -4,11 +4,19 @@
 //
 
 #include "repository/UserRepository.h"
+#include "common/UniqueFd.h"
 #include <string>
+#include <cerrno>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <string_view>
 #include <system_error>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/string_generator.hpp>
 #include "databases/DatabaseError.h"
@@ -367,7 +375,7 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
             SET status = $2, processed_at = CURRENT_TIMESTAMP
             WHERE id = $1 AND status = 'pending'
             RETURNING id
-        )",   update);
+        )",    update);
         if (updated.rowCount() != 1) return FriendRequestProcessResult::Conflict;
 
         if (action == FriendRequestAction::Accept) {
@@ -376,7 +384,7 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
                 INSERT INTO app.friend_relation (user_id, friend_id)
                 VALUES ($1, $2), ($2, $1)
                 ON CONFLICT (user_id, friend_id) DO NOTHING
-            )",  members);
+            )",   members);
         }
         return FriendRequestProcessResult::Success;
     });
@@ -440,4 +448,144 @@ bool UserRepository::VerifyUserDeviceRelation(const boost::uuids::uuid &my_id,co
     }
 
     return true;
+}
+
+std::optional<boost::uuids::uuid> UserRepository::saveAvatar(const boost::uuids::uuid& my_id, std::string_view avatar_bytes) {
+    backend::logging::Scope operationLog{"UserRepository", "saveAvatar"};
+    const auto avatar_id = boost::uuids::random_generator{}();
+    //生成随机的uuid,文件名为uuid.jpg,如a7c2d8e1-4f56-47b9-8a31-2d6e390bc123.jpg，
+    const auto id = boost::uuids::to_string(avatar_id);
+    //相对目录是object/avatars/a7/c2/a7c2d8e1-4f56-47b9-8a31-2d6e390bc123.jpg
+    const std::string storage_key = "objects/avatars/" + id.substr(0, 2) + "/" + id.substr(2, 2) + "/" + id + ".jpg";
+    //获取根目录
+    const char* configured_root = std::getenv("FILE_STORAGE_ROOT");
+    auto root = std::filesystem::path{configured_root && *configured_root ? configured_root : "/srv/chat-files"}.lexically_normal();
+    if (root.has_relative_path() && !root.has_filename()) root = root.parent_path();
+    if (!root.is_absolute() || !std::filesystem::is_directory(root)) {
+        throw std::system_error(std::make_error_code(std::errc::not_a_directory), "FILE_STORAGE_ROOT must be an existing absolute directory");
+    }
+    const auto staging_dir = root / "staging" / "avatars";
+    //这是临时路径
+    const auto staging_path = staging_dir / (id + ".part");
+    const auto final_path = root / storage_key;
+    const std::string user_parameters[] = {boost::uuids::to_string(my_id)};
+    const std::string avatar_parameters[] = {id, user_parameters[0], storage_key, std::to_string(avatar_bytes.size())};
+
+    const auto sync_fd = [](int fd) {
+        int result;
+        do { result = ::fsync(fd); } while (result == -1 && errno == EINTR);
+        if (result == -1) throw std::system_error(errno, std::generic_category(), "sync avatar storage");
+    };
+
+    bool staging_created = false;
+    bool final_published = false;
+    bool ready_to_commit = false;
+    try {
+        ConnectionLease lease{databasePool_};
+        auto& connection = lease.connection();
+        return connection.withTransaction([&]() -> std::optional<boost::uuids::uuid> {
+            // 锁定用户行，首次上传和后续替换都按同一把锁串行执行。
+            const auto user = connection.execute(
+                "SELECT id FROM app.users WHERE id = $1::uuid AND is_active = TRUE FOR UPDATE", user_parameters);
+            if (user.rowCount() == 0) return std::nullopt;
+            const auto previous = connection.execute(
+                "SELECT avatar_id FROM app.user_avatars WHERE user_id = $1::uuid", user_parameters);
+
+            std::filesystem::create_directories(staging_dir);
+            std::filesystem::create_directories(final_path.parent_path());
+            {
+                //创建fd,open的参数表示只写，离开作用域的时候会关闭
+                //如果路径已经存在就失败
+                int file_fd;
+                do {
+                    file_fd = ::open(staging_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+                } while (file_fd == -1 && errno == EINTR);
+                if (file_fd == -1) throw std::system_error(errno, std::generic_category(), "create temporary avatar");
+                UniqueFd file{file_fd};
+                staging_created = true;
+
+                // 同步写入已经通过 Service 校验的 JPEG，write 可能只写入一部分。
+                //remaining保证写完
+                auto remaining = avatar_bytes;
+                while (!remaining.empty()) {
+                    const auto written = ::write(file.get(), remaining.data(), remaining.size());
+                    if (written == -1) {
+                        const int error = errno;
+                        if (error == EINTR) continue;
+                        throw std::system_error(error, std::generic_category(), "write avatar");
+                    }
+                    if (written == 0) {
+                        throw std::system_error(std::make_error_code(std::errc::io_error), "avatar write made no progress");
+                    }
+                    remaining.remove_prefix(static_cast<std::size_t>(written));
+                }
+
+                struct stat file_info{};
+                //fstat从fd读取文件大小，保证st_size等于原始大小
+                if (::fstat(file.get(), &file_info) == -1) {
+                    throw std::system_error(errno, std::generic_category(), "check temporary avatar size");
+                }
+                if (file_info.st_size < 0 || static_cast<std::uintmax_t>(file_info.st_size) != avatar_bytes.size()) {
+                    throw std::system_error(std::make_error_code(std::errc::io_error), "temporary avatar size does not match JPEG size");
+                }
+                //	要求内核把文件内容及相关元数据同步到底层存储，并检查同步结果。
+                sync_fd(file.get());
+                // 在事务内检查关闭结果。release 避免 UniqueFd 析构时再次关闭文件 fd。
+                //保证关闭
+                if (::close(file.release()) == -1) {
+                    throw std::system_error(errno, std::generic_category(), "close temporary avatar");
+                }
+            }
+            //绑定新记录给头像，并把旧的记录标记为revoke
+            (void)connection.execute(R"(
+                INSERT INTO app.avatars (id, uploader_id, storage_key, size_bytes, created_at)
+                VALUES ($1::uuid, $2::uuid, $3, $4::bigint, clock_timestamp())
+            )",   avatar_parameters);
+            const std::string binding_parameters[] = {user_parameters[0], id};
+            (void)connection.execute(R"(
+                INSERT INTO app.user_avatars (user_id, avatar_id, updated_at)
+                VALUES ($1::uuid, $2::uuid, clock_timestamp())
+                ON CONFLICT (user_id) DO UPDATE
+                SET avatar_id = EXCLUDED.avatar_id, updated_at = EXCLUDED.updated_at
+            )",   binding_parameters);
+            if (previous.rowCount() != 0) {
+                const std::string previous_parameters[] = {std::string{previous.value(0, 0)}, user_parameters[0]};
+                (void)connection.execute(R"(
+                    UPDATE app.avatars
+                    SET status = 'revoked', revoked_at = GREATEST(clock_timestamp(), created_at)
+                    WHERE id = $1::uuid AND uploader_id = $2::uuid AND status = 'active'
+                )",
+                  previous_parameters);
+            }
+
+            // 正式路径和临时路径位于同一文件系统。link 以不覆盖方式发布文件。
+            if (::link(staging_path.c_str(), final_path.c_str()) == -1) {
+                throw std::system_error(errno, std::generic_category(), "publish avatar");
+            }
+            final_published = true;
+            std::filesystem::remove(staging_path);
+            staging_created = false;
+
+            // 同步正式目录及其父目录，使新建的分片目录也在提交前持久化。
+            for (auto directory = final_path.parent_path(); ; directory = directory.parent_path()) {
+                UniqueFd directory_fd{::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)};
+                if (!directory_fd.valid()) throw std::system_error(errno, std::generic_category(), "open avatar directory");
+                sync_fd(directory_fd.get());
+                if (directory == root || directory == directory.root_path()) break;
+            }
+            ready_to_commit = true;
+            return avatar_id;
+        });
+    } catch (...) {
+        // COMMIT 回包丢失时结果可能已提交，保留正式文件供后续核对。
+        std::error_code error;
+        if (staging_created) std::filesystem::remove(staging_path, error);
+        if (error) backend::logging::Logger::write(backend::logging::Level::Warn, "UserRepository", "avatar_staging_cleanup_failed");
+        if (final_published && !ready_to_commit) {
+            std::filesystem::remove(final_path, error);
+            if (error) backend::logging::Logger::write(backend::logging::Level::Warn, "UserRepository", "avatar_cleanup_failed");
+        }
+        if (ready_to_commit) backend::logging::Logger::write(backend::logging::Level::Warn, "UserRepository", "avatar_commit_failed_file_retained", {{"avatar_id", std::string_view{id}}});
+        throw;
+    }
 }

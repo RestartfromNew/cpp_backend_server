@@ -4,6 +4,7 @@
 
 #ifndef CPP_BACKEND_SERVER_USERSERVICE_H
 #define CPP_BACKEND_SERVER_USERSERVICE_H
+#include <string_view>
 #include <variant>
 
 
@@ -23,6 +24,15 @@ enum class UserServiceErrorCode {
     NoSuchDevice,
     NotActivated,
 
+};
+enum class AvatarErrorCode {
+    InvalidSize,
+    ParseFailed,
+    DataBaseError,
+    DatabaseUnavailable,
+    DecoderUnavailable,
+    StorageFailed,
+    UserUnavailable
 };
 /** @brief 内部凭据组合；不可写日志，也不能作为用户和设备已经通过验证的替代证据。 */
 struct TokenPairs {
@@ -50,6 +60,7 @@ public:
     std::variant<bool,UserServiceErrorCode> revokeUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id,const std::string &password);
     std::variant<bool,UserServiceErrorCode> verifyUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id);
 
+    std::variant<boost::uuids::uuid, AvatarErrorCode> uploadAvatar(const boost::uuids::uuid& my_uuid,const std::string_view jpeg_bytes);
 
 
 private:

@@ -72,6 +72,7 @@ enum class ParseError {
     InvalidHeader,
     InvalidBody,
     BodyTooLarge,
+    AvatarBodyTooLarge,
     None,
     UnsupportedMethod,
     UnsupportedVersion,
@@ -170,9 +171,11 @@ private:
     HttpRequest request;
     // 下一次 parse() 应继续处理的协议部分。
     State state_=State::RequestLine;
+    ParseError error_ = ParseError::None;
     // 从 Content-Length 解析出的 Body 字节数。
     // Header 未提供 Content-Length 时保持 0。
     std::size_t content_length=0;
+    bool content_length_seen_ = false;
         /**
      * 解析一行：
      *
@@ -211,9 +214,9 @@ private:
      * 只接受完整的非负十进制整数，并拒绝超过最大 Body 限制的值。
      * 成功时更新 contentLength_。
      *
-     * @return 解析和范围检查都成功时返回 true。
+     * @return 解析和范围检查都成功时返回 ParseError::None。
      */
-    bool parseContentLength(std::string_view value);
+    ParseError parseContentLength(std::string_view value);
 
 
 

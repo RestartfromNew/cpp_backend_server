@@ -41,6 +41,7 @@ public:
     HttpResponse verifyaccess(const HttpRequest& request);
     HttpResponse RevokeDevice(const HttpRequest& request,const boost::uuids::uuid& my_uuid);
     HttpResponse DeviceVerification(const HttpRequest& request);
+    HttpResponse uploadAvatar(const HttpRequest& request,const boost::uuids::uuid& my_uuid);
 
 
 private:

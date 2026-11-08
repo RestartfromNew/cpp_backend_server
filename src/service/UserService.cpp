@@ -5,7 +5,11 @@
 
 #include "service/UserService.h"
 
+#include <memory>
 #include <sodium/crypto_pwhash.h>
+#include <system_error>
+#include <turbojpeg.h>
+#include <vector>
 
 #include "service/SessionIdentityService.h"
 
@@ -125,5 +129,67 @@ std::variant<bool,UserServiceErrorCode> UserService::verifyUserDevice(const boos
         }
 
         throw; // 未识别的分类，继续向上抛。
+    }
+}
+
+namespace {
+std::optional<AvatarErrorCode> validateAvatarJpeg(std::string_view jpeg_bytes) {
+    constexpr std::size_t max_avatar_bytes = 256 * 1024;
+    constexpr int avatar_side = 512;
+
+    if (jpeg_bytes.empty() || jpeg_bytes.size() > max_avatar_bytes) {
+        return AvatarErrorCode::InvalidSize;
+    }
+
+    // 任何提前返回都由 unique_ptr 释放 TurboJPEG 解码器。
+    const std::unique_ptr<void, decltype(&tjDestroy)> decoder{tjInitDecompress(), &tjDestroy};
+    if (!decoder) {
+        return AvatarErrorCode::DecoderUnavailable;
+    }
+
+    const auto* data = reinterpret_cast<const unsigned char*>(jpeg_bytes.data());
+    const auto size = static_cast<unsigned long>(jpeg_bytes.size()); // 已限制在 256 KiB 以内。
+    int width = 0;
+    int height = 0;
+    int subsampling = 0;
+    int colorspace = 0;
+    if (tjDecompressHeader3(decoder.get(), data, size, &width, &height, &subsampling, &colorspace) != 0) {
+        return AvatarErrorCode::ParseFailed;
+    }
+    if (width != avatar_side || height != avatar_side) {
+        return AvatarErrorCode::InvalidSize;
+    }
+
+    // 尺寸通过后才分配像素缓冲。CMYK/YCCK JPEG 使用对应的解码输出格式。
+    const int pixel_format = (colorspace == TJCS_CMYK || colorspace == TJCS_YCCK) ? TJPF_CMYK : TJPF_RGB;
+    const auto pixel_bytes = static_cast<std::size_t>(avatar_side * avatar_side * tjPixelSize[pixel_format]);
+    std::vector<unsigned char> pixels(pixel_bytes);
+    const int flags = TJFLAG_STOPONWARNING | TJFLAG_LIMITSCANS;
+    if (tjDecompress2(decoder.get(), data, size, pixels.data(), width, 0, height, pixel_format, flags) != 0) {
+        return AvatarErrorCode::ParseFailed;
+    }
+    return std::nullopt;
+}
+}
+
+std::variant<boost::uuids::uuid, AvatarErrorCode> UserService::uploadAvatar(const boost::uuids::uuid& my_uuid, std::string_view jpeg_bytes) {
+    backend::logging::Scope operationLog{"UserService", "uploadAvatar"};
+    if (const auto error = validateAvatarJpeg(jpeg_bytes)) return *error;
+
+    // 校验结束后解码器和像素缓冲已释放，同步保存只需要原始 JPEG。
+    try {
+        const auto avatar_id = repository_.saveAvatar(my_uuid, jpeg_bytes);
+        if (!avatar_id) return AvatarErrorCode::UserUnavailable;
+        return *avatar_id;
+    } catch (const DatabaseError& error) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "UserService", "avatar_database_failed", {{"code", error.code()}});
+        if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08")) {
+            return AvatarErrorCode::DatabaseUnavailable;
+        }
+        return AvatarErrorCode::DataBaseError;
+    } catch (const std::system_error& error) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "UserService", "avatar_storage_failed",
+            {{"code", error.code().value()}, {"reason", error.what()}});
+        return AvatarErrorCode::StorageFailed;
     }
 }

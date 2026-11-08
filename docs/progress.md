@@ -1,5 +1,26 @@
 # 进度统计
 
+## 2026-11-03：头像与附件方案定稿（待实现）
+
+本条是设计状态，替代下方 11 月 1 日排期中的 APNs 优先；不代表新增功能已运行。
+
+- 先做普通 HTTP 头像，再加密图片/文件，APNs 因会员成本后置；暂用 Linux 磁盘，PostgreSQL 管元数据。
+- 头像独立 avatars 表，status=active/revoked 与 revoked_at；单请求保存/绑定，替换时原子撤销旧头像，维护线程延迟清理。不 E2EE，不进 file_uploads，不走附件 Reactor。
+- 聊天附件通过 WebSocket 申请许可，HTTP 单独上传密文，UploadReactor + 有界队列 + 共用磁盘池写临时文件；校验持久化后 ready。
+- file_uploads 任务独立于原 WebSocket，断线后已授权上传可继续，重连查询状态；完成事件只提示，不代替数据库。
+- packet 是加密附件描述和密钥，完整文件不走 WebSocket；复用 message_envelopes 的推送/补拉/ACK，Bob 另走 HTTP 下载解密。保留 envelope_attachments 设备授权。
+- 累计用户容量表可后置，保留大小/并发/磁盘上限；头像与附件只共用磁盘设施，不共用上传业务。
+
+入口：[最终方案](file-storage/README.md)、[协议与 iOS 流程](file-storage/attachment-protocol.md)、[新排期](feature-roadmap.md)。本次仅更新 docs/SQL 草案，未迁移或改业务代码。
+
+## 2026-11-01：下一阶段开发排期
+
+用户已报告 iOS 本人设备/好友设备在线推送和离线拉取成功；完整去重、崩溃恢复与撤销验收仍需记录。当前源码已增加设备登录 ticket、Refresh Token 绑定设备，以及撤销设备时撤销对应刷新凭据。此前“Refresh Token 未绑定设备”的判断已过时。
+
+开发顺序：文字聊天回归基线 → APNs 通用系统通知 → 头像与对象存储 → 加密图片 → 加密普通文件。预计 16–29 个专注工作日，另留约 20% 联调缓冲；不是固定交付承诺。
+
+详见 [功能路线与验收计划](feature-roadmap.md)。目前仅完成规划，APNs、头像和附件收发尚未实施。
+
 ## 2026-10-16：本人设备 HTTP 接口实测
 
 依据用户提供的 `tests/user_devices_test.ps1` 运行输出：localhost:8082，Alice 登录成功，**87 项断言通过、0 项失败、3 项跳过**，不是 87 个请求。

@@ -18,6 +18,9 @@ enum class HttpStatus {
     Not_Found = 404,
     Method_Not_Allowed = 405,
     Request_Timeout = 408,
+    Payload_Too_Large = 413,
+    Unsupported_Media_Type = 415,
+    Unprocessable_Content = 422,
     Internal_Server_Error = 500,
     Service_Unavailable = 503,
     Bad_Gateway = 502,
@@ -45,6 +48,12 @@ constexpr const char* reasonPhrase(HttpStatus status)
             return "Method Not Allowed";
         case HttpStatus::Request_Timeout:
             return "Request Timeout";
+        case HttpStatus::Payload_Too_Large:
+            return "Payload Too Large";
+        case HttpStatus::Unsupported_Media_Type:
+            return "Unsupported Media Type";
+        case HttpStatus::Unprocessable_Content:
+            return "Unprocessable Content";
         case HttpStatus::Internal_Server_Error:
             return "Internal Server Error";
         case HttpStatus::Bad_Gateway:

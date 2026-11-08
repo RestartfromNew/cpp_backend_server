@@ -1,0 +1,2 @@
+-r requirements.txt
+XEdDSA==1.2.0

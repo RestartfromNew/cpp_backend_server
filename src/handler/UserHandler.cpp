@@ -9,7 +9,9 @@
 #include "service/LoginTicketService.h"
 #include "nlohmann/json.hpp"
 #include <boost/uuid/string_generator.hpp>
+#include <algorithm>
 #include <optional>
+#include <string_view>
 
 HttpResponse UserHandler::FetchFriends(const HttpRequest&, const boost::uuids::uuid& my_uuid) {
     backend::logging::Scope operationLog{"UserHandler", "FetchFriends"};
@@ -652,4 +654,73 @@ HttpResponse UserHandler::DeviceVerification(const HttpRequest& request) {
     } catch (const std::exception&) {
         return ErrorResponseMaker(HttpStatus::Internal_Server_Error, "verification_device_failed", "Unable to complete login");
     }
+}
+
+HttpResponse UserHandler::uploadAvatar(const HttpRequest& request, const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserHandler", "UploadAvatar"};
+
+    if (request.body.empty()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "missing_request_body", "JPEG request body is required");
+    }
+    constexpr std::size_t max_avatar_bytes = 256 * 1024;
+    if (request.body.size() > max_avatar_bytes) {
+        return ErrorResponseMaker(HttpStatus::Payload_Too_Large, "avatar_too_large", "Avatar must be at most 256 KiB");
+    }
+
+    const auto equals_ignore_case = [](std::string_view left, std::string_view right) {
+        const auto lower = [](char ch) { return ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch + ('a' - 'A')) : ch; };
+        return std::equal(left.begin(), left.end(), right.begin(), right.end(), [&](char a, char b) { return lower(a) == lower(b); });
+    };
+
+    std::optional<std::string_view> content_type;
+    for (const auto& [name, value] : request.headers) {
+        if (equals_ignore_case(name, "transfer-encoding")) {
+            return ErrorResponseMaker(HttpStatus::Bad_Request, "unsupported_avatar_transfer_encoding", "Send the JPEG with Content-Length");
+        }
+
+        // 普通 HTTP 解析器保留了头字段原有大小写，值可能包含前后空白。
+        const auto start = value.find_first_not_of(" \t");
+        const auto end = value.find_last_not_of(" \t");
+        const auto trimmed = start == std::string::npos ? std::string_view{} : std::string_view{value}.substr(start, end - start + 1);
+        if (equals_ignore_case(name, "content-encoding") && !equals_ignore_case(trimmed, "identity")) {
+            return ErrorResponseMaker(HttpStatus::Unsupported_Media_Type, "unsupported_avatar_content_encoding", "Send the JPEG without HTTP content encoding");
+        }
+        if (equals_ignore_case(name, "content-type")) {
+            if (content_type.has_value()) {
+                return ErrorResponseMaker(HttpStatus::Bad_Request, "duplicate_content_type", "Only one Content-Type header is allowed");
+            }
+            content_type = trimmed;
+        }
+    }
+    if (!content_type || !equals_ignore_case(*content_type, "image/jpeg")) {
+        return ErrorResponseMaker(HttpStatus::Unsupported_Media_Type, "unsupported_avatar_content_type", "Content-Type must be image/jpeg");
+    }
+    const std::string_view jpeg_bytes{request.body};
+    const auto result = userService_.uploadAvatar(my_uuid, jpeg_bytes);
+    if (const auto* error = std::get_if<AvatarErrorCode>(&result)) {
+        switch (*error) {
+            case AvatarErrorCode::InvalidSize:
+                return ErrorResponseMaker(HttpStatus::Unprocessable_Content, "invalid_avatar_dimensions", "Avatar must be exactly 512 x 512 pixels");
+            case AvatarErrorCode::ParseFailed:
+                return ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_avatar_jpeg", "Avatar must be a complete and valid JPEG");
+            case AvatarErrorCode::DecoderUnavailable:
+                return ErrorResponseMaker(HttpStatus::Service_Unavailable, "avatar_decoder_unavailable", "Avatar validation is temporarily unavailable");
+            case AvatarErrorCode::StorageFailed:
+                return ErrorResponseMaker(HttpStatus::Internal_Server_Error, "avatar_storage_failed", "Unable to store avatar file");
+            case AvatarErrorCode::UserUnavailable:
+                return ErrorResponseMaker(HttpStatus::Forbidden, "avatar_user_unavailable", "An active account is required to upload an avatar");
+            case AvatarErrorCode::DataBaseError:
+                return ErrorResponseMaker(HttpStatus::Internal_Server_Error, "avatar_save_failed", "Unable to save avatar");
+            case AvatarErrorCode::DatabaseUnavailable:
+                return ErrorResponseMaker(HttpStatus::Service_Unavailable, "database_unavailable", "Avatar save could not be confirmed");
+        }
+        throw std::logic_error("Unhandled AvatarErrorCode");
+    }
+
+    HttpResponse response;
+    response.status = HttpStatus::Ok;
+    response.headers["Content-Type"] = "application/json";
+    const nlohmann::json body = {{"avatar", {{"id", boost::uuids::to_string(std::get<boost::uuids::uuid>(result))}, {"size_bytes", jpeg_bytes.size()}}}};
+    response.body = body.dump();
+    return response;
 }

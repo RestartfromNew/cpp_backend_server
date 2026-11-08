@@ -13,6 +13,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SODIUM REQUIRED libsodium)
 find_package(jwt-cpp CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_path(TURBOJPEG_INCLUDE_DIR NAMES turbojpeg.h REQUIRED)
+find_library(TURBOJPEG_LIBRARY NAMES turbojpeg REQUIRED)
 add_executable(cpp_backend_server src/main.cpp
         src/repository/LoginTicketRepository.cpp
         src/service/LoginTicketService.cpp
@@ -100,6 +102,15 @@ add_executable(cpp_backend_server src/main.cpp
         include/domain/SyncEnvelopeRequest.h
         src/service/SessionIdentityService.cpp
         include/service/SessionIdentityService.h
+        src/file/UploadReactor.cpp
+        include/file/UploadReactor.h
+        src/file/DiskPool.cpp
+        include/file/DiskPool.h
+        include/domain/UploadSession.h
+        src/file/DiskOperation.cpp
+        include/file/DiskOperation.h
+        src/file/UploadHttpParser.cpp
+        include/file/UploadHttpParser.h
 )
 target_include_directories(
         cpp_backend_server
@@ -107,6 +118,7 @@ target_include_directories(
         PRIVATE
         ${PROJECT_SOURCE_DIR}/include
         ${SODIUM_INCLUDE_DIRS}
+        ${TURBOJPEG_INCLUDE_DIR}
 )
 target_link_libraries(
         cpp_backend_server
@@ -116,6 +128,7 @@ target_link_libraries(
         nlohmann_json::nlohmann_json
         Boost::headers
         ${SODIUM_LIBRARIES}
+        ${TURBOJPEG_LIBRARY}
         jwt-cpp::jwt-cpp
         OpenSSL::Crypto
 )
@@ -245,4 +258,24 @@ target_include_directories(login_ticket_isolated_test PRIVATE
 target_link_libraries(login_ticket_isolated_test PRIVATE Threads::Threads)
 add_test(NAME login_ticket_isolated COMMAND login_ticket_isolated_test)
 set_tests_properties(login_ticket_isolated PROPERTIES TIMEOUT 20)
+
+add_executable(upload_http_headers_test tests/upload_http_headers_test.cpp src/file/UploadHttpParser.cpp)
+target_include_directories(upload_http_headers_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME upload_http_headers COMMAND upload_http_headers_test)
+set_tests_properties(upload_http_headers PROPERTIES TIMEOUT 10)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(upload_reactor_disk_smoke_test
+        tests/upload_reactor_disk_smoke_test.cpp
+        src/common/UniqueFd.cpp
+        src/file/DiskOperation.cpp
+        src/file/DiskPool.cpp
+        src/file/UploadHttpParser.cpp
+        src/file/UploadReactor.cpp)
+    target_include_directories(upload_reactor_disk_smoke_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_definitions(upload_reactor_disk_smoke_test PRIVATE UPLOAD_TEST_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
+    target_link_libraries(upload_reactor_disk_smoke_test PRIVATE Threads::Threads Boost::headers)
+    add_test(NAME upload_reactor_disk_smoke COMMAND upload_reactor_disk_smoke_test)
+    set_tests_properties(upload_reactor_disk_smoke PROPERTIES TIMEOUT 20)
+endif()
 

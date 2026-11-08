@@ -33,7 +33,13 @@ std::optional<PendingWebsocket> HttpSession::HandleHttpSession() {
         }
         if (result.status == ParseStatus::Error) {
             backend::logging::Logger::write(backend::logging::Level::Warn, "http", "parse_rejected");
-            response = ErrorResponseMaker(HttpStatus::Bad_Request,"invalid_http_request","Invalid HTTP request");
+            if (result.error == ParseError::AvatarBodyTooLarge) {
+                response = ErrorResponseMaker(HttpStatus::Payload_Too_Large, "avatar_too_large", "Avatar must be at most 256 KiB");
+            } else if (result.error == ParseError::BodyTooLarge) {
+                response = ErrorResponseMaker(HttpStatus::Payload_Too_Large, "request_body_too_large", "Request body exceeds the limit");
+            } else {
+                response = ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_http_request", "Invalid HTTP request");
+            }
 
             response.headers["Connection"] = "close";
             connection_.sendAll(generator.generateHttpResponse(response));
@@ -81,10 +87,6 @@ std::optional<PendingWebsocket> HttpSession::HandleHttpSession() {
             try {
                 response = router_.route(request);
                 backend::logging::Logger::write(backend::logging::Level::Info, "http", "response", {{"status", static_cast<int>(response.status)}, {"method", static_cast<int>(request.method)}});
-                response.headers["Connection"] = "close";
-                std::string bytes =generator.generateHttpResponse(response);
-                connection_.sendAll(bytes);
-                return std::nullopt;
             }
             catch (DatabaseError &error) {
                 backend::logging::Logger::write(backend::logging::Level::Error, "http", "database_error", {{"code", error.code()}, {"kind", static_cast<int>(error.kind())}});

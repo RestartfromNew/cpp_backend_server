@@ -1,8 +1,10 @@
 # Backend API Documentation
 
-Last updated: 2026-10-20.
+Last updated: 2026-11-03.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
+
+> Planned, not implemented: avatars use ordinary HTTP; encrypted attachments request permission over WebSocket, transfer file bytes over separate HTTP, and reuse device envelopes for online/offline messages. See the [design](file-storage/README.md) and [protocol draft](file-storage/attachment-protocol.md) (Chinese). These proposed types/routes are not part of the implemented API list below.
 
 This document describes the HTTP and WebSocket endpoints implemented in the current source code, not a planned final design. It is based on main, Router, Handlers, authentication services, Repositories, and HTTP parsing/response code. Section 20.1 records limited device HTTP tests from user-supplied output on 2026-10-16; other endpoints are not thereby verified. A deployed executable that has not been rebuilt may behave differently from the current source.
 

@@ -8,6 +8,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <exception>
 
@@ -79,6 +80,7 @@ public:
     bool VerifyUserDeviceRelation(const boost::uuids::uuid &my_id,const boost::uuids::uuid &device_id);
     RevokeDeviceResult revokeUserDevice(const boost::uuids::uuid& my_id,
         const boost::uuids::uuid& device_id);
+    std::optional<boost::uuids::uuid> saveAvatar(const boost::uuids::uuid& my_id, std::string_view avatar_bytes);
 
 
 private:

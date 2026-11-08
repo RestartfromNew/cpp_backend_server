@@ -1,8 +1,10 @@
 # 服务器后端接口文档
 
-更新时间：2026-10-20。
+更新时间：2026-11-03。
 
 English version: [Backend API Documentation](backend-api.en.md)。
+
+> 文件功能规划（尚未实现）：头像走普通 HTTP，聊天附件经 WebSocket 申请上传许可、独立 HTTP 传输密文，再复用现有信封推送/拉取。详见 [最终设计](file-storage/README.md) 与 [协议草案](file-storage/attachment-protocol.md)。这些新 type/路径不属于下方已实现 API 清单。
 
 本文描述当前源代码已经实现的 HTTP 与 WebSocket 接口，而不是计划中的最终设计。根据 `main`、Router、Handler、认证服务、Repository 和 HTTP 解析/响应实现整理。2026-10-16 已根据用户提供的运行输出记录部分设备 HTTP 接口实测结果，范围和未验证项见 20.1；不代表所有接口均已实测。部署的可执行文件若未重新编译，行为可能与当前源码不同。
 

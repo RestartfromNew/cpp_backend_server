@@ -3,8 +3,22 @@
 //
 
 #include "http/HttpParse.h"
+#include <algorithm>
 #include <charconv>
 #include <system_error>
+
+namespace {
+bool headerNameEquals(std::string_view name, std::string_view lowercase) {
+    return std::equal(name.begin(), name.end(), lowercase.begin(), lowercase.end(), [](char left, char right) {
+        if (left >= 'A' && left <= 'Z') left = static_cast<char>(left + ('a' - 'A'));
+        return left == right;
+    });
+}
+
+bool isAvatarUpload(const HttpRequest& request) {
+    return request.method == HttpMethod::POST && request.path == "/upload_avatar";
+}
+}
 
 ParseResult HttpParse::parse(std::string_view buffer) {
     std::size_t consumed = 0;
@@ -34,7 +48,7 @@ ParseResult HttpParse::parse(std::string_view buffer) {
                 }
                 if (result.status == StepStatus::Error) {
                     state_ = State::Error;
-                    return {ParseStatus::Error, consumed};
+                    return {ParseStatus::Error, consumed, error_};
                 }
 
                 consumed += result.consumed;
@@ -78,7 +92,8 @@ ParseResult HttpParse::parse(std::string_view buffer) {
             case State::Error: {
                 return {
                     ParseStatus::Error,
-                    consumed
+                    consumed,
+                    error_
                 };
             }
         }
@@ -100,8 +115,9 @@ StepResult HttpParse::parseRequestLine(std::string_view input) {
     if (end==std::string_view::npos) {
         return StepResult{StepStatus::NeedMoreData,0};
         }
-    std::size_t space_method=input.find(" ");
-    std::size_t space_version=input.find(" ", space_method + 1);
+    const auto line = input.substr(0, end);
+    std::size_t space_method=line.find(" ");
+    std::size_t space_version=line.find(" ", space_method + 1);
     if (space_method==std::string_view::npos||space_version==std::string_view::npos) {
         return  StepResult{StepStatus::Error,0};
     }
@@ -143,7 +159,7 @@ StepResult HttpParse::parseHeader(std::string_view input)
 
     const std::string_view name =line.substr(0, separator);
 
-    if (name.empty()) {
+    if (name.empty() || name.find_first_of(" \t") != std::string_view::npos) {
         return {
             StepStatus::Error,
             0
@@ -152,24 +168,34 @@ StepResult HttpParse::parseHeader(std::string_view input)
 
     std::string_view value =line.substr(separator + 1);
 
-    // 暂时只清理 Header value 前面的空格。
-    while (!value.empty() && value.front() == ' ') {
-        value.remove_prefix(1);
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.remove_prefix(1);
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1);
+
+    // 普通 HTTP 只支持 Content-Length 定长正文。
+    if (headerNameEquals(name, "transfer-encoding")) {
+        return {StepStatus::Error, 0};
     }
 
-    request.headers[
-        std::string{name}
-    ] = std::string{value};
+    if (headerNameEquals(name, "content-length")) {
+        if (content_length_seen_) return {StepStatus::Error, 0};
+        content_length_seen_ = true;
+        error_ = parseContentLength(value);
+        if (error_ != ParseError::None) return {StepStatus::Error, 0};
+    }
 
-    if (name == "Content-Length") {
-        if (!parseContentLength(value)) {
-            return {
-                StepStatus::Error,
-                0
-            };
+    if (isAvatarUpload(request)) {
+        // 头像请求的关键字段统一大小写，避免 map 覆盖重复字段。
+        for (const std::string_view key : {"authorization", "content-type", "content-encoding"}) {
+            if (headerNameEquals(name, key)) {
+                if (!request.headers.emplace(std::string{key}, std::string{value}).second) {
+                    return {StepStatus::Error, 0};
+                }
+                return {StepStatus::Complete, lineEnd + 2};
+            }
         }
     }
 
+    request.headers[std::string{name}] = std::string{value};
     return {
         StepStatus::Complete,
         lineEnd + 2,
@@ -194,7 +220,9 @@ StepResult HttpParse::parseBody(std::string_view input) {
 void HttpParse::reset() {
     request = HttpRequest{};
     state_ = State::RequestLine;
+    error_ = ParseError::None;
     content_length = 0;
+    content_length_seen_ = false;
 }
 
 HttpMethod HttpParse::parseMethod(std::string_view method) {
@@ -209,33 +237,24 @@ HttpMethod HttpParse::parseMethod(std::string_view method) {
         if (method == "PATCH") return HttpMethod::PATCH;
         return HttpMethod::UNKNOWN;
     }
-bool HttpParse::parseContentLength(
-    std::string_view text
-)
-{
-    if (text.empty()) {
-        return false;
-    }
-
+ParseError HttpParse::parseContentLength(std::string_view text) {
+    if (text.empty()) return ParseError::InvalidHeader;
     std::size_t length = 0;
-
     const auto [end, error] =
         std::from_chars(
             text.data(),
             text.data() + text.size(),
             length
         );
-
-    if (error != std::errc{} ||end != text.data() + text.size()) {
-        return false;
+    if (end != text.data() + text.size() || (error != std::errc{} && error != std::errc::result_out_of_range)) {
+        return ParseError::InvalidHeader;
     }
-    // 第一版先限制 Body 最大为 1 MB。
-    constexpr std::size_t MaxBodySize =1024 * 1024;
-
-    if (length > MaxBodySize) {
-        return false;
+    const bool avatar = isAvatarUpload(request);
+    const std::size_t max_body_size = avatar ? 256 * 1024 : 1024 * 1024;
+    if (error == std::errc::result_out_of_range || length > max_body_size) {
+        return avatar ? ParseError::AvatarBodyTooLarge : ParseError::BodyTooLarge;
     }
 
     content_length = length;
-    return true;
+    return ParseError::None;
 }
