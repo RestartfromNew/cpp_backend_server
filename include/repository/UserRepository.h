@@ -46,6 +46,10 @@ enum class RevokeDeviceResult {
     AlreadyRevoked,
     DeviceNotActive
 };
+struct FriendRecord {
+    User user;
+    std::optional<boost::uuids::uuid> avatar_id;
+};
 /** @brief 携带类型化设备关系拒绝原因；Service 通过 error() 映射状态，不能靠匹配 what() 文本判断。 */
 class DeviceRelationException : public std::runtime_error {
 public:
@@ -73,7 +77,7 @@ public:
     std::optional<User> FindUserByUsername(const std::string &username);
     FriendshipRequestRecord CreateNewFriendship(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id,const std::string &message);
     std::optional<std::vector<FriendshipRequestRecord>> FetchUnprocessedRequest(const boost::uuids::uuid &my_id);
-    std::vector<User> FetchFriends(const boost::uuids::uuid& my_id);
+    std::vector<FriendRecord> FetchFriends(const boost::uuids::uuid& my_id);
     FriendRequestProcessResult processFriendshipRequest(const boost::uuids::uuid& my_id,
         const boost::uuids::uuid& request_id, FriendRequestAction action);
     bool VerifyFriendShip(const boost::uuids::uuid &my_id,const boost::uuids::uuid &friend_id);
@@ -81,10 +85,11 @@ public:
     RevokeDeviceResult revokeUserDevice(const boost::uuids::uuid& my_id,
         const boost::uuids::uuid& device_id);
     std::optional<boost::uuids::uuid> saveAvatar(const boost::uuids::uuid& my_id, std::string_view avatar_bytes);
-
+    std::optional<std::string> getAvatarById(const boost::uuids::uuid& avatar_id, const boost::uuids::uuid& my_id);
 
 private:
     DatabasePool &databasePool_;
+    const char* configured_root;
 };
 
 #endif //CPP_BACKEND_SERVER_USERREPOSITORY_H

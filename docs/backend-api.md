@@ -4,7 +4,7 @@
 
 English version: [Backend API Documentation](backend-api.en.md)。
 
-> 头像上传已在源码实现，接口见 [第 23 节](#23-上传或替换当前头像)。头像读取、删除和聊天加密附件仍见 [文件设计](file-storage/README.md) 与 [附件协议草案](file-storage/attachment-protocol.md)。
+> 头像接口见 [第 23 节（上传）](#23-上传或替换当前头像)和 [第 24 节（下载）](#24-下载头像)。头像删除和聊天加密附件见 [文件设计](file-storage/README.md) 与 [附件协议草案](file-storage/attachment-protocol.md)。
 
 本文描述当前源代码已经实现的 HTTP 与 WebSocket 接口，而不是计划中的最终设计。根据 `main`、Router、Handler、认证服务、Repository 和 HTTP 解析/响应实现整理。2026-10-16 已根据用户提供的运行输出记录部分设备 HTTP 接口实测结果，范围和未验证项见 20.1；不代表所有接口均已实测。部署的可执行文件若未重新编译，行为可能与当前源码不同。
 
@@ -60,8 +60,9 @@ X-User-Email: alice@example.com
 | POST | `/request_friendship` | 必须 | 创建好友申请 |
 | GET | `/fetch_unprocessed_friend_request` | 必须 | 拉取收到的待处理申请，无需 Body |
 | POST | `/process_friendship_request` | 必须 | 接受、拒绝或取消申请 |
-| GET | `/fetch_friends` | 必须 | 拉取当前用户的好友列表，无需 Body |
+| GET | `/fetch_friends` | 必须 | 拉取当前用户的好友列表，包含可空的 `avatar_id`，无需 Body |
 | POST | `/upload_avatar` | 必须 | 上传 512×512 JPEG 并替换当前头像 |
+| POST | `/get_avatar` | 必须 | 根据 `avatar_id` 下载当前头像，成功时返回 JPEG |
 
 表中“必须”指Authorization中的正式Access Token；login_ticket表示JSON请求体认证，不能用普通Bearer Token替代。
 
@@ -535,13 +536,15 @@ request_id 是申请 ID；id 是申请者用户 ID。处理申请时使用前者
     {
       "id": "0776df58-9cbe-4f81-b613-4439f6c3b566",
       "username": "bob_chat01",
-      "display_name": "Bob"
+      "display_name": "Bob",
+      "avatar_id": "a7c2d8e1-4f56-47b9-8a31-2d6e390bc123"
     }
   ]
 }
 ```
 
 无好友时返回 `{"friends":[]}`，不是 404，也不是字符串 "None"。
+每个好友都包含 `avatar_id`。如果当前绑定的头像有效、未撤销且好友账号启用，返回头像 UUID 字符串。没有符合条件的头像时返回 JSON `null`，好友仍保留在列表中。客户端可以显示默认头像，有 UUID 时按需调用 [头像下载接口](#24-下载头像)。
 当前返回全部好友，不分页，不按 is_active 过滤已有关系；不返回邮箱、密码哈希或 token。
 前提是好友表只包含已建立关系，不能遗留旧 pending 数据。
 
@@ -1631,4 +1634,39 @@ curl.exe -i --request POST "$baseUrl/upload_avatar" `
 sudo journalctl -u cpp-backend-test.service -n 50 --no-pager
 ```
 
-出现 `avatar_storage_failed` 时检查服务日志中的 `code` 和 `reason`。当前 API 源码已提供上传入口。头像读取和删除仍是后续接口。
+出现 `avatar_storage_failed` 时检查服务日志中的 `code` 和 `reason`。
+
+## 24. 下载头像
+
+`POST /get_avatar` 需要 `Authorization: Bearer <access_token>`。发送 `Content-Type: application/json`，正文包含字符串类型的 `avatar_id`。这个 UUID 可取自好友列表的 `avatar_id`，或本人上传成功响应中的 `avatar.id`。
+
+```json
+{"avatar_id":"a7c2d8e1-4f56-47b9-8a31-2d6e390bc123"}
+```
+
+后端从 Token 取得请求者身份。头像必须是启用账号当前绑定且未撤销的有效头像，请求者必须是头像所属用户或其当前好友。头像不存在、已替换、已撤销或无权查看时统一返回 `404 avatar_not_found`。
+
+成功时返回 `200 OK`，`Content-Type` 为 `image/jpeg`，`Content-Length` 为响应的字节数。响应体是原始 JPEG 字节，可直接解码成图片。错误响应使用 JSON。
+
+在已完成登录的 Windows PowerShell 会话中，将 `$avatarId` 换成实际返回的头像 UUID。
+
+```powershell
+$baseUrl = 'http://localhost:8082'
+$avatarId = 'a7c2d8e1-4f56-47b9-8a31-2d6e390bc123'
+$body = @{ avatar_id = $avatarId } | ConvertTo-Json -Compress
+Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseUrl/get_avatar" `
+    -Headers @{ Authorization = "Bearer $accessToken" } `
+    -ContentType 'application/json' -Body $body `
+    -OutFile (Join-Path $env:TEMP 'downloaded-avatar.jpg')
+```
+
+| HTTP | code | 条件 |
+| --- | --- | --- |
+| 400 | `missing_request_body` | 请求体为空 |
+| 400 | `invalid_json` | 请求体无法解析为 JSON 对象 |
+| 400 | `invalid_avatar_id` | 缺少 `avatar_id`、类型错误或 UUID 格式无效 |
+| 401 | `invalid_access_token` / `access_token_expired` | 认证失败或 Token 过期 |
+| 404 | `avatar_not_found` | 头像不可用或当前用户无权访问 |
+| 500 | `avatar_fetch_failed` | 数据库查询失败 |
+| 500 | `avatar_read_failed` | 文件无法打开、读取失败或文件为空 |
+| 503 | `database_unavailable` | 数据库连接错误 |

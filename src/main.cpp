@@ -256,6 +256,13 @@ int main()
                 return response;
             }
             );
+        router.addProtectedRoute(
+            HttpMethod::POST,
+            "/get_avatar",
+            [&userHandler](const HttpRequest& request, const boost::uuids::uuid& user_id)->HttpResponse {
+                return userHandler.get_avatar(request, user_id);
+            }
+        );
         router.addRoute(
             HttpMethod::POST,
             "/login_by_email",

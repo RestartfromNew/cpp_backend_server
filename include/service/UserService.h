@@ -54,7 +54,7 @@ public:
     std::optional<User> findUserByUserName(const std::string& username);
     std::optional<FriendshipRequestRecord> requestFriendship(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& friend_uuid,const std::string &message);
     std::optional<std::vector<FriendshipRequestRecord>> fetchFriendshipRequest(const boost::uuids::uuid& my_uuid);
-    std::vector<User> fetchFriends(const boost::uuids::uuid& my_uuid);
+    std::vector<FriendRecord> fetchFriends(const boost::uuids::uuid& my_uuid);
     FriendRequestProcessResult processFriendshipRequest(const boost::uuids::uuid& my_uuid,
         const boost::uuids::uuid& request_id, const std::string& process);
     std::variant<bool,UserServiceErrorCode> revokeUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id,const std::string &password);
@@ -62,6 +62,7 @@ public:
 
     std::variant<boost::uuids::uuid, AvatarErrorCode> uploadAvatar(const boost::uuids::uuid& my_uuid,const std::string_view jpeg_bytes);
 
+    std::optional<std::string> getAvatarByID(const boost::uuids::uuid& avatar_id, const boost::uuids::uuid& my_uuid);
 
 private:
     bool verifyPassword( const std::string &password_hash, const std::string &password );

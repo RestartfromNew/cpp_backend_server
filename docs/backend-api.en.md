@@ -4,7 +4,7 @@ Last updated: 2026-11-08.
 
 Chinese version: [服务器后端接口文档](backend-api.md).
 
-> Avatar upload is implemented in the current source. See [Section 23](#23-upload-or-replace-the-current-avatar). Avatar retrieval, deletion, and encrypted attachments remain planned. See the [file storage design](file-storage/README.md) and [attachment protocol draft](file-storage/attachment-protocol.md) (Chinese).
+> See [Section 23 (upload)](#23-upload-or-replace-the-current-avatar) and [Section 24 (download)](#24-download-an-avatar) for the avatar API. For avatar deletion and encrypted attachments, see the [file storage design](file-storage/README.md) and [attachment protocol draft](file-storage/attachment-protocol.md) (Chinese).
 
 This document describes the HTTP and WebSocket endpoints implemented in the current source code, not a planned final design. It is based on main, Router, Handlers, authentication services, Repositories, and HTTP parsing/response code. Section 20.1 records limited device HTTP tests from user-supplied output on 2026-10-16; other endpoints are not thereby verified. A deployed executable that has not been rebuilt may behave differently from the current source.
 
@@ -60,8 +60,9 @@ Let the client calculate `Content-Length`. For ordinary protected routes, use `a
 | POST | `/request_friendship` | Required | Create a friend request |
 | GET | `/fetch_unprocessed_friend_request` | Required | Fetch incoming pending requests; no body |
 | POST | `/process_friendship_request` | Required | Accept, reject, or cancel a request |
-| GET | `/fetch_friends` | Required | Fetch the authenticated user's friends; no body |
+| GET | `/fetch_friends` | Required | Fetch the authenticated user's friends with nullable `avatar_id`; no body |
 | POST | `/upload_avatar` | Required | Upload a 512×512 JPEG and replace the current avatar |
+| POST | `/get_avatar` | Required | Download a current avatar by `avatar_id` as JPEG |
 
 `/refresh_token` is currently registered as GET and requires a JSON body. This documents the existing behavior, not a recommended design. It should be migrated to POST.
 
@@ -542,13 +543,15 @@ Success: 200.
     {
       "id": "0776df58-9cbe-4f81-b613-4439f6c3b566",
       "username": "bob_chat01",
-      "display_name": "Bob"
+      "display_name": "Bob",
+      "avatar_id": "a7c2d8e1-4f56-47b9-8a31-2d6e390bc123"
     }
   ]
 }
 ```
 
 No friends returns `{"friends":[]}`, not 404 or the string "None".
+Each friend includes `avatar_id`. It is a UUID string when the friend has an active account and a current, active, unrevoked avatar. Otherwise the value is JSON `null`, and the friend remains in the list. Clients can show a placeholder and [download the avatar](#24-download-an-avatar) on demand when a UUID is present.
 Currently returns all friends without pagination or filtering existing relationships by is_active.
 Emails, password hashes, and tokens are excluded.
 The friendship table must contain established relationships only, not legacy pending records.
@@ -1505,4 +1508,39 @@ Restart `cpp-backend-test.service` after replacing the deployed binary. Use `cmp
 sudo journalctl -u cpp-backend-test.service -n 50 --no-pager
 ```
 
-For `avatar_storage_failed`, check the service log's `code` and `reason` fields. Avatar upload is implemented in the current source. Avatar retrieval and deletion remain planned.
+For `avatar_storage_failed`, check the service log's `code` and `reason` fields.
+
+## 24. Download an avatar
+
+`POST /get_avatar` requires `Authorization: Bearer <access_token>`. Send `Content-Type: application/json` and an `avatar_id` string in the request body. Use the `avatar_id` from the friends list or `avatar.id` from your own successful upload.
+
+```json
+{"avatar_id":"a7c2d8e1-4f56-47b9-8a31-2d6e390bc123"}
+```
+
+The server identifies the requester from the token. Only the owner or a current friend can download an active, unrevoked avatar currently bound to an active account. A missing, replaced, revoked, or inaccessible avatar returns `404 avatar_not_found`.
+
+Success returns `200 OK` with `Content-Type: image/jpeg` and `Content-Length` set to the response size in bytes. The body contains the raw JPEG bytes. Error responses use JSON.
+
+In a Windows PowerShell session with a valid `$accessToken`, replace `$avatarId` with a UUID returned by the API.
+
+```powershell
+$baseUrl = 'http://localhost:8082'
+$avatarId = 'a7c2d8e1-4f56-47b9-8a31-2d6e390bc123'
+$body = @{ avatar_id = $avatarId } | ConvertTo-Json -Compress
+Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseUrl/get_avatar" `
+    -Headers @{ Authorization = "Bearer $accessToken" } `
+    -ContentType 'application/json' -Body $body `
+    -OutFile (Join-Path $env:TEMP 'downloaded-avatar.jpg')
+```
+
+| HTTP | code | Condition |
+| --- | --- | --- |
+| 400 | `missing_request_body` | Request body is empty |
+| 400 | `invalid_json` | Request body cannot be parsed as a JSON object |
+| 400 | `invalid_avatar_id` | Missing `avatar_id`, wrong type, or invalid UUID format |
+| 401 | `invalid_access_token` / `access_token_expired` | Authentication failed or the token expired |
+| 404 | `avatar_not_found` | Avatar is unavailable or the requester lacks access |
+| 500 | `avatar_fetch_failed` | Database query failed |
+| 500 | `avatar_read_failed` | File could not be opened, reading failed, or the file is empty |
+| 503 | `database_unavailable` | Database connection error |

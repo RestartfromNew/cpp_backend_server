@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <optional>
 #include <string_view>
+#include <system_error>
 
 HttpResponse UserHandler::FetchFriends(const HttpRequest&, const boost::uuids::uuid& my_uuid) {
     backend::logging::Scope operationLog{"UserHandler", "FetchFriends"};
@@ -19,11 +20,14 @@ HttpResponse UserHandler::FetchFriends(const HttpRequest&, const boost::uuids::u
         const auto friends = userService_.fetchFriends(my_uuid);
         nlohmann::json body;
         body["friends"] = nlohmann::json::array();
-        for (const auto& user : friends) {
+        for (const auto& record : friends) {
+            const auto& user = record.user;
             nlohmann::json friend_details;
             friend_details["id"] = boost::uuids::to_string(user.id);
             friend_details["username"] = user.username;
             friend_details["display_name"] = user.display_name;
+            friend_details["avatar_id"] = nullptr;
+            if (record.avatar_id) friend_details["avatar_id"] = boost::uuids::to_string(*record.avatar_id);
             body["friends"].push_back(std::move(friend_details));
         }
         HttpResponse response;
@@ -723,4 +727,52 @@ HttpResponse UserHandler::uploadAvatar(const HttpRequest& request, const boost::
     const nlohmann::json body = {{"avatar", {{"id", boost::uuids::to_string(std::get<boost::uuids::uuid>(result))}, {"size_bytes", jpeg_bytes.size()}}}};
     response.body = body.dump();
     return response;
+}
+
+HttpResponse UserHandler::get_avatar(const HttpRequest& request, const boost::uuids::uuid& my_uuid) {
+    backend::logging::Scope operationLog{"UserHandler", "GetAvatar"};
+    if (request.body.empty()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "missing_request_body", "Request body is required");
+    }
+    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "invalid_json", "Request body must be a valid JSON object");
+    }
+    const auto avatarIdIterator = body.find("avatar_id");
+    if (avatarIdIterator == body.end() || !avatarIdIterator->is_string()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "invalid_avatar_id", "avatar_id must be a UUID string");
+    }
+
+    boost::uuids::uuid avatar_id;
+    try {
+        avatar_id = boost::uuids::string_generator{}(avatarIdIterator->get_ref<const std::string&>());
+    } catch (const std::runtime_error&) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "invalid_avatar_id", "avatar_id must be a UUID string");
+    }
+
+    try {
+        auto avatar = userService_.getAvatarByID(avatar_id, my_uuid);
+        if (!avatar) {
+            return ErrorResponseMaker(HttpStatus::Not_Found, "avatar_not_found", "Avatar not found");
+        }
+        HttpResponse response;
+        response.status = HttpStatus::Ok;
+        response.headers["Content-Type"] = "image/jpeg";
+        response.body = std::move(*avatar);
+        return response;
+    } catch (const DatabaseError& error) {
+        if (error.kind() == DatabaseErrorKind::Connection) {
+            return ErrorResponseMaker(HttpStatus::Service_Unavailable,
+                "database_unavailable", "Service temporarily unavailable");
+        }
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
+            "avatar_fetch_failed", "Unable to fetch avatar");
+    } catch (const std::system_error&) {
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
+            "avatar_read_failed", "Unable to read avatar file");
+    }
 }

@@ -68,7 +68,7 @@ std::optional<std::vector<FriendshipRequestRecord>> UserService::fetchFriendship
     return result;
 
 }
-std::vector<User> UserService::fetchFriends(const boost::uuids::uuid& my_uuid) {
+std::vector<FriendRecord> UserService::fetchFriends(const boost::uuids::uuid& my_uuid) {
     backend::logging::Scope operationLog{"UserService", "fetchFriends"};
     return repository_.FetchFriends(my_uuid);
 }
@@ -192,4 +192,8 @@ std::variant<boost::uuids::uuid, AvatarErrorCode> UserService::uploadAvatar(cons
             {{"code", error.code().value()}, {"reason", error.what()}});
         return AvatarErrorCode::StorageFailed;
     }
+}
+
+std::optional<std::string> UserService::getAvatarByID(const boost::uuids::uuid& avatar_id, const boost::uuids::uuid& my_uuid) {
+    return repository_.getAvatarById(avatar_id, my_uuid);
 }

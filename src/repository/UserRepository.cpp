@@ -44,7 +44,9 @@ namespace {
 
 } // namespace
 
-UserRepository::UserRepository(DatabasePool &databasePool): databasePool_(databasePool){}
+UserRepository::UserRepository(DatabasePool &databasePool): databasePool_(databasePool) {
+    configured_root=std::getenv("FILE_STORAGE_ROOT");
+}
 std::optional<PasswordLoginRecord> UserRepository::FindLoginRecordByEmail(const std::string &email) {
     backend::logging::Scope operationLog{"UserRepository", "FindLoginRecordByEmail"};
     const std::string parameters[] = {email};
@@ -312,27 +314,36 @@ std::optional<std::vector<FriendshipRequestRecord>> UserRepository::FetchUnproce
     }
     return request_summary;
 }
-std::vector<User> UserRepository::FetchFriends(const boost::uuids::uuid& my_id) {
+std::vector<FriendRecord> UserRepository::FetchFriends(const boost::uuids::uuid& my_id) {
     backend::logging::Scope operationLog{"UserRepository", "FetchFriends"};
     const std::string Parameters[] = {boost::uuids::to_string(my_id)};
     ConnectionLease lease{databasePool_};
     auto result = lease.connection().execute(
         R"(
-            SELECT u.id, u.display_name, u.username
+            SELECT u.id, u.display_name, u.username, a.id AS avatar_id
             FROM app.friend_relation AS fr
             JOIN app.users AS u ON u.id = fr.friend_id
+            LEFT JOIN app.user_avatars AS ua ON ua.user_id = u.id
+            LEFT JOIN app.avatars AS a
+                ON a.id = ua.avatar_id AND a.uploader_id = u.id AND a.status = 'active'
+                AND a.revoked_at IS NULL AND u.is_active = TRUE
             WHERE fr.user_id = $1
             ORDER BY u.username, u.id
         )",
         Parameters
     );
-    std::vector<User> friends;
+    std::vector<FriendRecord> friends;
     friends.reserve(result.rowCount());
     for (std::size_t i = 0; i < result.rowCount(); ++i) {
-        friends.push_back(User{
-            .id = parseId(result.value(i, 0)),
-            .display_name = std::string{result.value(i, 1)},
-            .username = std::string{result.value(i, 2)}
+        std::optional<boost::uuids::uuid> avatar_id;
+        if (!result.isNull(i, 3)) avatar_id = parseId(result.value(i, 3));
+        friends.push_back(FriendRecord{
+            .user = User{
+                .id = parseId(result.value(i, 0)),
+                .display_name = std::string{result.value(i, 1)},
+                .username = std::string{result.value(i, 2)}
+            },
+            .avatar_id = avatar_id
         });
     }
     return friends;
@@ -375,7 +386,7 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
             SET status = $2, processed_at = CURRENT_TIMESTAMP
             WHERE id = $1 AND status = 'pending'
             RETURNING id
-        )",    update);
+        )",   update);
         if (updated.rowCount() != 1) return FriendRequestProcessResult::Conflict;
 
         if (action == FriendRequestAction::Accept) {
@@ -384,7 +395,7 @@ FriendRequestProcessResult UserRepository::processFriendshipRequest(
                 INSERT INTO app.friend_relation (user_id, friend_id)
                 VALUES ($1, $2), ($2, $1)
                 ON CONFLICT (user_id, friend_id) DO NOTHING
-            )",   members);
+            )",    members);
         }
         return FriendRequestProcessResult::Success;
     });
@@ -458,7 +469,6 @@ std::optional<boost::uuids::uuid> UserRepository::saveAvatar(const boost::uuids:
     //相对目录是object/avatars/a7/c2/a7c2d8e1-4f56-47b9-8a31-2d6e390bc123.jpg
     const std::string storage_key = "objects/avatars/" + id.substr(0, 2) + "/" + id.substr(2, 2) + "/" + id + ".jpg";
     //获取根目录
-    const char* configured_root = std::getenv("FILE_STORAGE_ROOT");
     auto root = std::filesystem::path{configured_root && *configured_root ? configured_root : "/srv/chat-files"}.lexically_normal();
     if (root.has_relative_path() && !root.has_filename()) root = root.parent_path();
     if (!root.is_absolute() || !std::filesystem::is_directory(root)) {
@@ -588,4 +598,53 @@ std::optional<boost::uuids::uuid> UserRepository::saveAvatar(const boost::uuids:
         if (ready_to_commit) backend::logging::Logger::write(backend::logging::Level::Warn, "UserRepository", "avatar_commit_failed_file_retained", {{"avatar_id", std::string_view{id}}});
         throw;
     }
+}
+std::optional<std::string> UserRepository::getAvatarById(const boost::uuids::uuid& avatar_id, const boost::uuids::uuid& my_id) {
+    backend::logging::Scope operationLog{"UserRepository", "GetAvatarById"};
+    const std::string parameters[] = {boost::uuids::to_string(avatar_id), boost::uuids::to_string(my_id)};
+    std::string storage_key;
+    {
+        ConnectionLease lease{databasePool_};
+        auto result = lease.connection().execute(
+            R"(
+                SELECT a.storage_key
+                FROM app.avatars AS a
+                JOIN app.user_avatars AS ua ON ua.avatar_id = a.id AND ua.user_id = a.uploader_id
+                JOIN app.users AS u ON u.id = ua.user_id
+                WHERE a.id = $1::uuid AND a.status = 'active' AND a.revoked_at IS NULL
+                  AND u.is_active = TRUE
+                  AND (ua.user_id = $2::uuid OR EXISTS (
+                      SELECT 1 FROM app.friend_relation AS fr
+                      WHERE fr.user_id = $2::uuid AND fr.friend_id = ua.user_id
+                  ))
+            )",
+            parameters
+        );
+        if (result.rowCount() == 0) return std::nullopt;
+        storage_key = result.value(0, 0);
+    }
+    const std::filesystem::path root{
+        configured_root && *configured_root ? configured_root : "/srv/chat-files"
+    };
+    const auto full_path = root / storage_key;
+    UniqueFd file{::open(full_path.c_str(), O_RDONLY | O_CLOEXEC)};
+    if (!file.valid()) {
+        const int error = errno;
+        throw std::system_error(error, std::generic_category(), "open avatar");
+    }
+    std::string jpeg_bytes;
+    char buffer[8192];
+    while (true) {
+        const ssize_t count = ::read(file.get(), buffer, sizeof(buffer));
+        if (count > 0) {
+            jpeg_bytes.append(buffer, static_cast<std::size_t>(count));
+            continue;
+        }
+        if (count == 0) break;
+        const int error = errno;
+        if (error == EINTR) continue;
+        throw std::system_error(error, std::generic_category(), "read avatar");
+    }
+    if (jpeg_bytes.empty()) throw std::system_error(std::make_error_code(std::errc::io_error), "empty avatar file");
+    return jpeg_bytes;
 }
