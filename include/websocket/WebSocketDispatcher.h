@@ -9,11 +9,14 @@
 #include <nlohmann/json.hpp>
 #include <http/AuthMiddleWare.h>
 #include <optional>
+#include <string_view>
+#include <variant>
 #include <cstdint>
 #include <vector>
 #include <service/ChatService.h>
 #include <domain/SyncEnvelopeRequest.h>
 #include "service/SessionIdentityService.h"
+#include "domain/AvatarErrorCode.h"
 class ServiceThreadPool;
 
 
@@ -28,8 +31,9 @@ class WebSocketDispatcher {
     public:
     using Task=std::function<void()>;
     using Reply = std::function<void(nlohmann::json)>;
+    using AvatarUpload = std::function<std::variant<boost::uuids::uuid, AvatarErrorCode>(const boost::uuids::uuid&, std::string_view)>;
     //这个东西负责协调两个池
-    explicit WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare,SessionIdentityService &sessionIdentityService);
+    explicit WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare,SessionIdentityService &sessionIdentityService, AvatarUpload avatarUpload = {});
     void dispatch(const boost::uuids::uuid &session_device_id,const boost::uuids::uuid &session_user_id,nlohmann::json frame,Reply reply);
 private:
     std::optional<ParsedNewMessage> parseNewMessage(const nlohmann::json& payload,const Reply& reply) const;
@@ -44,6 +48,7 @@ private:
     ServiceThreadPool &threadPool_;
     AuthMiddleWare &AuthMiddleWare_;
     SessionIdentityService &sessionIdentityService_;
+    AvatarUpload avatarUpload_;
 
 };
 

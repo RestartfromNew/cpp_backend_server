@@ -9,6 +9,7 @@
 #include <sodium/crypto_pwhash.h>
 #include <system_error>
 #include <turbojpeg.h>
+#include <utility>
 #include <vector>
 
 #include "service/SessionIdentityService.h"
@@ -177,10 +178,9 @@ std::variant<boost::uuids::uuid, AvatarErrorCode> UserService::uploadAvatar(cons
     if (const auto error = validateAvatarJpeg(jpeg_bytes)) return *error;
 
     // 校验结束后解码器和像素缓冲已释放，同步保存只需要原始 JPEG。
+    std::optional<boost::uuids::uuid> avatar_id;
     try {
-        const auto avatar_id = repository_.saveAvatar(my_uuid, jpeg_bytes);
-        if (!avatar_id) return AvatarErrorCode::UserUnavailable;
-        return *avatar_id;
+        avatar_id = repository_.saveAvatar(my_uuid, jpeg_bytes);
     } catch (const DatabaseError& error) {
         backend::logging::Logger::write(backend::logging::Level::Error, "UserService", "avatar_database_failed", {{"code", error.code()}});
         if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08")) {
@@ -192,6 +192,21 @@ std::variant<boost::uuids::uuid, AvatarErrorCode> UserService::uploadAvatar(cons
             {{"code", error.code().value()}, {"reason", error.what()}});
         return AvatarErrorCode::StorageFailed;
     }
+    if (!avatar_id) return AvatarErrorCode::UserUnavailable;
+
+    // saveAvatar 返回时绑定已提交。通知失败时，好友重连后仍能读到新头像。
+    if (avatarChanged_) {
+        try {
+            avatarChanged_(my_uuid, *avatar_id);
+        } catch (const std::exception&) {
+            backend::logging::Logger::write(backend::logging::Level::Warn, "UserService", "avatar_notification_failed");
+        }
+    }
+    return *avatar_id;
+}
+
+void UserService::setAvatarChangedHandler(AvatarChanged handler) {
+    avatarChanged_ = std::move(handler);
 }
 
 std::optional<std::string> UserService::getAvatarByID(const boost::uuids::uuid& avatar_id, const boost::uuids::uuid& my_uuid) {

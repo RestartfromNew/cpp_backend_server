@@ -12,6 +12,7 @@
 #include "databases/DatabaseError.h"
 #include <limits>
 #include <set>
+#include <utility>
 
 #include "service/ServiceThreadPool.h"
 namespace {
@@ -115,6 +116,23 @@ std::vector<std::uint8_t> requirePacket(
     return packet;
 }
 
+const char* avatarErrorCode(AvatarErrorCode error) {
+    switch (error) {
+        case AvatarErrorCode::InvalidSize: return "invalid_avatar_dimensions";
+        case AvatarErrorCode::ParseFailed: return "invalid_avatar_jpeg";
+        case AvatarErrorCode::DataBaseError: return "avatar_save_failed";
+        case AvatarErrorCode::DatabaseUnavailable: return "database_unavailable";
+        case AvatarErrorCode::DecoderUnavailable: return "avatar_decoder_unavailable";
+        case AvatarErrorCode::StorageFailed: return "avatar_storage_failed";
+        case AvatarErrorCode::UserUnavailable: return "avatar_user_unavailable";
+    }
+    return "internal_server_error";
+}
+
+nlohmann::json avatarUploadError(const char* code) {
+    return {{"type", "user.upload_avatar.result"}, {"success", false}, {"error", {{"code", code}}}};
+}
+
 }
 enum class WebsocketRouter {
     //发一条新消息
@@ -122,6 +140,7 @@ enum class WebsocketRouter {
     NewTextMessage,
     SyncEnvelope,
     AckEnvelope,
+    UploadAvatar,
     UnKnown
 
 };
@@ -134,9 +153,12 @@ WebsocketRouter parseType(const std::string& type) {
         return WebsocketRouter::SyncEnvelope;
     if (type == "chat.envelopes.ack")
         return WebsocketRouter::AckEnvelope;
+    if (type == "user.upload_avatar")
+        return WebsocketRouter::UploadAvatar;
     return WebsocketRouter::UnKnown;
 }
-WebSocketDispatcher::WebSocketDispatcher(ServiceThreadPool &threadPool,AuthMiddleWare &AuthMiddleWare,SessionIdentityService &session_identity_service):threadPool_(threadPool),AuthMiddleWare_(AuthMiddleWare),sessionIdentityService_(session_identity_service) {};
+WebSocketDispatcher::WebSocketDispatcher(ServiceThreadPool& threadPool, AuthMiddleWare& authMiddleWare, SessionIdentityService& session_identity_service, AvatarUpload avatarUpload)
+    : threadPool_(threadPool), AuthMiddleWare_(authMiddleWare), sessionIdentityService_(session_identity_service), avatarUpload_(std::move(avatarUpload)) {}
 void WebSocketDispatcher::dispatch(const boost::uuids::uuid &session_device_id,const boost::uuids::uuid &session_user_id,nlohmann::json frame,Reply reply) {
 
     nlohmann::json payload=std::move(frame["payload"]);
@@ -451,6 +473,64 @@ void WebSocketDispatcher::dispatch(const boost::uuids::uuid &session_device_id,c
             }
             return;
         }
+        case WebsocketRouter::UploadAvatar: {
+            const auto field = payload.find("jpeg_base64");
+            if (field == payload.end() || !field->is_string() || field->get_ref<const std::string&>().empty()) {
+                reply(avatarUploadError("invalid_avatar_base64"));
+                return;
+            }
+            constexpr std::size_t maxAvatarBytes = 256 * 1024;
+            const auto& encoded = field->get_ref<const std::string&>();
+            if (encoded.size() > 4 * ((maxAvatarBytes + 2) / 3)) {
+                reply(avatarUploadError("avatar_too_large"));
+                return;
+            }
+            if (encoded.size() % 4 != 0) {
+                reply(avatarUploadError("invalid_avatar_base64"));
+                return;
+            }
+            const std::size_t padding = encoded.ends_with("==") ? 2 : (encoded.ends_with('=') ? 1 : 0);
+            const std::size_t decodedSize = encoded.size() / 4 * 3 - padding;
+            if (decodedSize > maxAvatarBytes) {
+                reply(avatarUploadError("avatar_too_large"));
+                return;
+            }
+
+            Task task = [this, payload = std::move(payload), authResult, session_user_id, session_device_id, decodedSize, reply] {
+                if (!validateSessionRequest(authResult, session_user_id, session_device_id, payload, reply)) return;
+                nlohmann::json response;
+                try {
+                    const auto& base64 = payload.at("jpeg_base64").get_ref<const std::string&>();
+                    std::string jpeg(decodedSize, '\0');
+                    std::size_t written = 0;
+                    const char* end = nullptr;
+                    const int status = sodium_base642bin(reinterpret_cast<unsigned char*>(jpeg.data()), jpeg.size(),
+                        base64.data(), base64.size(), nullptr, &written, &end, sodium_base64_VARIANT_ORIGINAL);
+                    if (status != 0 || written != decodedSize || end != base64.data() + base64.size()) {
+                        response = avatarUploadError("invalid_avatar_base64");
+                    } else if (!avatarUpload_) {
+                        response = avatarUploadError("internal_server_error");
+                    } else {
+                        const auto result = avatarUpload_(session_user_id, jpeg);
+                        if (const auto* error = std::get_if<AvatarErrorCode>(&result)) {
+                            response = avatarUploadError(avatarErrorCode(*error));
+                        } else {
+                            response = {{"type", "user.upload_avatar.result"}, {"success", true},
+                                {"avatar", {{"id", boost::uuids::to_string(std::get<boost::uuids::uuid>(result))}, {"size_bytes", written}}}};
+                        }
+                    }
+                } catch (const std::exception&) {
+                    response = avatarUploadError("internal_server_error");
+                }
+                reply(std::move(response));
+            };
+            try {
+                threadPool_.receiveTask(std::move(task));
+            } catch (const std::exception&) {
+                reply(avatarUploadError("server_busy"));
+            }
+            return;
+        }
         case WebsocketRouter::UnKnown: {
             // 未知类型不进入业务路由。
             return;
@@ -685,6 +765,9 @@ bool WebSocketDispatcher::validateSessionRequest(
     } else if (type == "chat.envelopes.ack") {
         deviceField = "device_id";
         responseType = "chat.envelopes.ack.result";
+    } else if (type == "user.upload_avatar") {
+        deviceField = "device_id";
+        responseType = "user.upload_avatar.result";
     }
 
     if (deviceField == nullptr) {

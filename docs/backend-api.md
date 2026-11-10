@@ -1670,3 +1670,57 @@ Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseUrl/get_avatar" `
 | 500 | `avatar_fetch_failed` | 数据库查询失败 |
 | 500 | `avatar_read_failed` | 文件无法打开、读取失败或文件为空 |
 | 503 | `database_unavailable` | 数据库连接错误 |
+
+## 25. WebSocket 上传头像与好友同步
+
+### 25.1 上传
+
+建立已绑定活动设备的 WebSocket 后，发送一条 JSON 文本消息。服务端会校验消息中的 Bearer Token、连接的用户和设备，以及请求里的 `device_id`。
+
+```json
+{
+  "type": "user.upload_avatar",
+  "authorization": "Bearer <access_token>",
+  "device_id": "<当前 WebSocket 设备 UUID>",
+  "jpeg_base64": "<标准 Base64 编码的 JPEG>"
+}
+```
+
+`jpeg_base64` 使用标准 Base64，按需带 `=` 填充。直接发送编码后的字符串，省略 `data:image/jpeg;base64,` 前缀和换行。解码后必须是完整的 512×512 JPEG，最大 256 KiB。WebSocket 和 [HTTP 上传](#23-上传或替换当前头像)共用校验、保存和头像替换逻辑。
+
+```json
+{
+  "type": "user.upload_avatar.result",
+  "success": true,
+  "avatar": {
+    "id": "a7c2d8e1-4f56-47b9-8a31-2d6e390bc123",
+    "size_bytes": 18675
+  }
+}
+```
+
+上传失败时，同一结果类型返回 `success: false` 和 `error.code`。Base64 格式错误用 `invalid_avatar_base64`，超限用 `avatar_too_large`，设备 UUID 缺失或无效用 `invalid_request`，设备与连接不一致用 `session_device_mismatch`，任务入队失败用 `server_busy`。图片校验和存储错误码见第 23 节。公共认证或连接绑定校验失败时，客户端也要处理 `type: "error"`。
+
+### 25.2 在线推送与重连补齐
+
+Alice 通过 HTTP 或 WebSocket 更换头像后，服务端在数据库提交成功后，向当前好友已建立 WebSocket 的设备投递变更事件。
+
+```json
+{
+  "type": "user.avatar_changed",
+  "user_id": "<Alice 的用户 UUID>",
+  "avatar_id": "a7c2d8e1-4f56-47b9-8a31-2d6e390bc123"
+}
+```
+
+事件仅携带 ID。在线客户端将事件作为资料变更信号，可合并短时间内的多条事件，再通过好友列表确认当前 ID，避免并发换头像时被晚到的旧事件覆盖。事件尽力投递，离线时通过以下同步流程补齐。
+
+**B 的 WebSocket 每次断线重连成功后，iOS 必须拉取 `GET /fetch_friends`，按好友 `id` 比较服务端和本地的 `avatar_id`。**
+
+| 比较结果 | iOS 行为 |
+| --- | --- |
+| ID 相同 | 复用该 ID 对应的缓存。图片未缓存且需要显示时按需下载。 |
+| ID 变为另一个 UUID | 更新期望 ID。先查新 ID 的缓存，未命中且需要显示时调用 `POST /get_avatar`。旧图保留到新图解码完成，再局部替换。 |
+| 服务端返回 `null` | 清除该好友的当前头像关联，并显示默认头像。 |
+
+缓存按 `avatar_id` 索引，界面按好友 `id` 绑定。异步下载完成后，确认该好友的期望 ID 仍等于请求的 ID，再更新界面。如果头像下载返回 `404 avatar_not_found`，同步好友列表并以最新 ID 为准。

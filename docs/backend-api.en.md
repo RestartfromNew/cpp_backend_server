@@ -1544,3 +1544,57 @@ Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseUrl/get_avatar" `
 | 500 | `avatar_fetch_failed` | Database query failed |
 | 500 | `avatar_read_failed` | File could not be opened, reading failed, or the file is empty |
 | 503 | `database_unavailable` | Database connection error |
+
+## 25. WebSocket avatar upload and friend synchronization
+
+### 25.1 Upload
+
+After opening a WebSocket bound to an active device, send a JSON text message. The server validates the Bearer token, the account and device bound to the connection, and the supplied `device_id`.
+
+```json
+{
+  "type": "user.upload_avatar",
+  "authorization": "Bearer <access_token>",
+  "device_id": "<current WebSocket device UUID>",
+  "jpeg_base64": "<JPEG encoded as standard Base64>"
+}
+```
+
+Use standard Base64 with `=` padding where needed. Send the encoded string without a `data:image/jpeg;base64,` prefix or line breaks. The decoded data must be a complete 512×512 JPEG of at most 256 KiB. WebSocket and [HTTP upload](#23-upload-or-replace-the-current-avatar) share validation, storage, and replacement logic.
+
+```json
+{
+  "type": "user.upload_avatar.result",
+  "success": true,
+  "avatar": {
+    "id": "a7c2d8e1-4f56-47b9-8a31-2d6e390bc123",
+    "size_bytes": 18675
+  }
+}
+```
+
+Upload errors use the same result type with `success: false` and `error.code`. Codes include `invalid_avatar_base64`, `avatar_too_large`, `invalid_request` for a missing or malformed device UUID, `session_device_mismatch` for a different device, and `server_busy` when the task could not be queued. See Section 23 for image validation and storage errors. Clients must also handle `type: "error"` for common authentication and session binding failures.
+
+### 25.2 Online delivery and reconnect
+
+When Alice replaces her avatar over HTTP or WebSocket, the server queues an event for her current friends' connected devices after the database commit succeeds.
+
+```json
+{
+  "type": "user.avatar_changed",
+  "user_id": "<Alice's user UUID>",
+  "avatar_id": "a7c2d8e1-4f56-47b9-8a31-2d6e390bc123"
+}
+```
+
+The event carries identifiers only. Online clients can coalesce events and refresh the friend list to confirm the current avatar ID, preventing a late event from reverting the display after concurrent uploads. Event delivery is best effort. The reconnect flow recovers missed updates.
+
+**After each successful WebSocket reconnect, B's iOS app must call `GET /fetch_friends` and compare the server and local `avatar_id` values by friend `id`.**
+
+| Comparison | iOS behavior |
+| --- | --- |
+| Same ID | Reuse the cached image for that ID. Download on demand if the image is absent and needed. |
+| Changed to another UUID | Update the desired ID. Check the cache and call `POST /get_avatar` on a miss when the image is needed. Keep the previous image visible until the replacement is decoded, then update the avatar view. |
+| Server returns `null` | Clear the friend's current avatar binding and show the default image. |
+
+Key image caches by `avatar_id` and bind views by friend `id`. When a download finishes, update the view only if its requested ID still matches the friend's desired ID. If the download returns `404 avatar_not_found`, refresh the friends list and use its current ID.

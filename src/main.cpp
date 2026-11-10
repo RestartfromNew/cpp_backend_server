@@ -128,8 +128,18 @@ int main()
         ChatService chat_service{envelopeRepository};
         ServiceThreadPool service_thread_pool(4, chat_service);
         SessionIdentityService sessionIdentityService{userRepository};
-        WebSocketDispatcher web_socket_dispatcher(service_thread_pool,authMiddleWare,sessionIdentityService);
+        WebSocketDispatcher web_socket_dispatcher(service_thread_pool, authMiddleWare, sessionIdentityService,
+            [&userService](const boost::uuids::uuid& user_id, std::string_view jpeg_bytes) {
+                return userService.uploadAvatar(user_id, jpeg_bytes);
+            });
         WebSocketPool web_socket_pool(web_socket_pool_config,web_socket_dispatcher,authMiddleWare,sessionIdentityService);
+        userService.setAvatarChangedHandler([&userService, &web_socket_pool](const boost::uuids::uuid& user_id, const boost::uuids::uuid& avatar_id) {
+            const nlohmann::json event{{"type", "user.avatar_changed"}, {"user_id", boost::uuids::to_string(user_id)},
+                {"avatar_id", boost::uuids::to_string(avatar_id)}};
+            for (const auto& friend_record : userService.fetchFriends(user_id)) {
+                web_socket_pool.push_To_User(friend_record.user.id, event);
+            }
+        });
         UserHandler userHandler{userService,registerService,loginService,keyService,web_socket_pool,loginTickets};
         ChatHandler chatHandler{keyService,loginTickets};
         Router router{authMiddleWare};

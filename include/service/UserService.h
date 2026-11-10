@@ -6,10 +6,12 @@
 #define CPP_BACKEND_SERVER_USERSERVICE_H
 #include <string_view>
 #include <variant>
+#include <functional>
 
 
 #include "Auth/RefreshTokenService.h"
 #include "Auth/AccessTokenService.h"
+#include "domain/AvatarErrorCode.h"
 #include "repository/UserRepository.h"
 class RefreshTokenService;
 
@@ -25,15 +27,6 @@ enum class UserServiceErrorCode {
     NotActivated,
 
 };
-enum class AvatarErrorCode {
-    InvalidSize,
-    ParseFailed,
-    DataBaseError,
-    DatabaseUnavailable,
-    DecoderUnavailable,
-    StorageFailed,
-    UserUnavailable
-};
 /** @brief 内部凭据组合；不可写日志，也不能作为用户和设备已经通过验证的替代证据。 */
 struct TokenPairs {
     std::string access_token;
@@ -43,6 +36,8 @@ struct TokenPairs {
 /** @brief 用户查询、好友操作及设备撤销业务；协调 Repository 并映射类型化结果，不操作 socket。 */
 class UserService {
 public:
+    using AvatarChanged = std::function<void(const boost::uuids::uuid&, const boost::uuids::uuid&)>;
+
     explicit UserService(
         UserRepository& repository,
         RefreshTokenRepository& refresh_token_repository,
@@ -61,6 +56,8 @@ public:
     std::variant<bool,UserServiceErrorCode> verifyUserDevice(const boost::uuids::uuid& my_uuid,const boost::uuids::uuid& device_id);
 
     std::variant<boost::uuids::uuid, AvatarErrorCode> uploadAvatar(const boost::uuids::uuid& my_uuid,const std::string_view jpeg_bytes);
+    // 在启动 HTTP 和 WebSocket 工作线程之前配置。
+    void setAvatarChangedHandler(AvatarChanged handler);
 
     std::optional<std::string> getAvatarByID(const boost::uuids::uuid& avatar_id, const boost::uuids::uuid& my_uuid);
 
@@ -70,6 +67,7 @@ private:
     AccessTokenService &accessTokenService_;
     RefreshTokenService &refreshTokenService_;
     RefreshTokenRepository refresh_token_repository_;
+    AvatarChanged avatarChanged_;
 };
 
 

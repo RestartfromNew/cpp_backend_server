@@ -524,18 +524,6 @@ void WebsocketWorker::handleReadable(int fd) {
         nlohmann::json applicationMessage = session.ApplicationParse(frame);
         const std::uint64_t sessionId = session.id();
 
-        std::cout
-            << "WebSocket message reached business-pool boundary: session="
-            << sessionId
-            << ", opcode="
-            << static_cast<unsigned int>(frame.opcode)
-            << ", payload_bytes="
-            << frame.payload.size()
-            << ", application="
-            // 现有调试输出包含完整业务 JSON，可能含认证凭据；新增 Logger 不沿用此做法。
-            << applicationMessage.dump()
-            << '\n';
-
         backend::logging::Logger::write(backend::logging::Level::Debug, "websocket", "business_frame", {{"worker_id", worker_id_}, {"session_id", sessionId}, {"bytes", frame.payload.size()}, {"opcode", static_cast<int>(frame.opcode)}});
         //dispatch的第一个参数是json,第二个是整个reply;在task中传入的response，传入这个lambda
         dispatcher_.dispatch(session.getDeviceId(),session.getUserId(),std::move(applicationMessage),[this, fd, sessionId](nlohmann::json response) mutable {
