@@ -6,6 +6,7 @@
 #include "websocket/WebSocketDispatcher.h"
 
 #include <sodium/utils.h>
+#include <charconv>
 #include <boost/uuid/string_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <stdexcept>
@@ -15,6 +16,7 @@
 #include <utility>
 
 #include "service/ServiceThreadPool.h"
+#include "domain/UploadPermission.h"
 namespace {
 
 std::string encodePacketBase64(const std::vector<std::uint8_t>& bytes) {
@@ -70,6 +72,67 @@ boost::uuids::uuid requireUuid(
         throw std::invalid_argument(
             std::string{field} + " must be a UUID"
         );
+    }
+}
+
+nlohmann::json serializeUploadPermissionResponse(const UploadPermissionResponse& response) {
+    const auto* granted = std::get_if<UploadPermissionGranted>(&response.result);
+    nlohmann::json json{{"type", "file.upload.request.result"}, {"success", granted != nullptr}};
+    if (response.request_id) json["request_id"] = boost::uuids::to_string(*response.request_id);
+    if (!granted) {
+        const auto& error = std::get<UploadPermissionError>(response.result);
+        json["error"] = {{"code", error.code}, {"message", error.message}};
+        return json;
+    }
+
+    json["attachment_id"] = boost::uuids::to_string(granted->attachment_id);
+    json["upload_id"] = boost::uuids::to_string(granted->upload_id);
+    json["upload_state"] = granted->upload_state;
+    json["expires_at"] = granted->expires_at;
+    if (granted->requires_renew) json["requires_renew"] = true;
+    if (const auto& credentials = granted->credentials) {
+        json["upload_url"] = credentials->upload_url;
+        json["upload_token"] = credentials->upload_token;
+        json["credential_version"] = credentials->credential_version;
+        json["method"] = "PUT";
+        json["required_headers"] = {{"Content-Type", "application/octet-stream"}};
+    }
+    return json;
+}
+
+std::optional<UploadPermissionRequest> parseUploadPermission(
+    const nlohmann::json& payload, const WebSocketDispatcher::Reply& reply) {
+    UploadPermissionRequest parsed;
+    try {
+        parsed.client_request_id = requireUuid(payload, "request_id");
+        if (parsed.client_request_id.is_nil()) throw std::invalid_argument("request_id must be a non-nil UUID");
+
+        const auto size = payload.find("size_bytes");
+        if (size == payload.end() || !size->is_number_integer() ||
+            (size->is_number_unsigned() && size->get<std::uint64_t>() > std::numeric_limits<std::int64_t>::max()) ||
+            size->get<std::int64_t>() <= 0) {
+            throw std::invalid_argument("size_bytes must be a positive integer within BIGINT range");
+        }
+        parsed.expected_size_bytes = size->get<std::int64_t>();
+
+        if (payload.contains("sha256_hex")) {
+            const auto& hex = requireString(payload, "sha256_hex");
+            if (hex.size() != 64) throw std::invalid_argument("sha256_hex must contain 64 hexadecimal characters");
+            auto& digest = parsed.expected_sha256.emplace();
+            for (std::size_t i = 0; i < digest.size(); ++i) {
+                const char* first = hex.data() + i * 2;
+                const auto result = std::from_chars(first, first + 2, digest[i], 16);
+                if (result.ec != std::errc{} || result.ptr != first + 2) {
+                    throw std::invalid_argument("sha256_hex must contain 64 hexadecimal characters");
+                }
+            }
+        }
+        return parsed;
+    } catch (const std::invalid_argument& error) {
+        UploadPermissionResponse response{std::nullopt, UploadPermissionError{"invalid_request", error.what()}};
+        if (!parsed.client_request_id.is_nil()) response.request_id = parsed.client_request_id;
+        reply(serializeUploadPermissionResponse(response));
+        return std::nullopt;
     }
 }
 
@@ -141,6 +204,7 @@ enum class WebsocketRouter {
     SyncEnvelope,
     AckEnvelope,
     UploadAvatar,
+    RequestUploadPermission,
     UnKnown
 
 };
@@ -155,6 +219,8 @@ WebsocketRouter parseType(const std::string& type) {
         return WebsocketRouter::AckEnvelope;
     if (type == "user.upload_avatar")
         return WebsocketRouter::UploadAvatar;
+    if (type == "file.upload.request" || type == "file.upload.permission")
+        return WebsocketRouter::RequestUploadPermission;
     return WebsocketRouter::UnKnown;
 }
 WebSocketDispatcher::WebSocketDispatcher(ServiceThreadPool& threadPool, AuthMiddleWare& authMiddleWare, SessionIdentityService& session_identity_service, AvatarUpload avatarUpload)
@@ -355,6 +421,35 @@ void WebSocketDispatcher::dispatch(const boost::uuids::uuid &session_device_id,c
                     {"error", {{"code", "server_busy"},
                                {"message", "Service task was not queued"}}}
                 });
+            }
+            return;
+        }
+        case WebsocketRouter::RequestUploadPermission: {
+            const auto parsed = parseUploadPermission(payload, reply);
+            if (!parsed) return;
+
+            try {
+                threadPool_.receiveTask([this, payload = std::move(payload), request = *parsed,
+                    authResult, session_user_id, session_device_id, reply] {
+                    if (!validateSessionRequest(authResult, session_user_id, session_device_id, payload, reply)) return;
+                    nlohmann::json response;
+                    try {
+                        auto result = threadPool_.fileService.createUploadCredentials(session_user_id, session_device_id, request);
+                        response = serializeUploadPermissionResponse({request.client_request_id, std::move(result)});
+                    } catch (const std::exception&) {
+                        backend::logging::Logger::write(backend::logging::Level::Error, "dispatcher", "upload_permission_failed");
+                        response = serializeUploadPermissionResponse({
+                            request.client_request_id,
+                            UploadPermissionError{"internal_server_error", "Unable to create upload permission"}
+                        });
+                    }
+                    reply(std::move(response));
+                });
+            } catch (const std::exception&) {
+                reply(serializeUploadPermissionResponse({
+                    parsed->client_request_id,
+                    UploadPermissionError{"server_busy", "Service task was not queued"}
+                }));
             }
             return;
         }

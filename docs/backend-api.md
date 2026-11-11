@@ -1724,3 +1724,57 @@ Alice 通过 HTTP 或 WebSocket 更换头像后，服务端在数据库提交成
 | 服务端返回 `null` | 清除该好友的当前头像关联，并显示默认头像。 |
 
 缓存按 `avatar_id` 索引，界面按好友 `id` 绑定。异步下载完成后，确认该好友的期望 ID 仍等于请求的 ID，再更新界面。如果头像下载返回 `404 avatar_not_found`，同步好友列表并以最新 ID 为准。
+
+## 26. WebSocket 申请聊天附件上传许可
+
+使用已绑定活动设备的 WebSocket 发送 JSON 文本消息。账号和设备取自已认证的会话。
+
+```json
+{
+  "type": "file.upload.request",
+  "authorization": "Bearer <access_token>",
+  "request_id": "4ae3f215-7c68-49b9-9e1f-c19f9446a107",
+  "size_bytes": 182430
+}
+```
+
+- `file.upload.permission` 是兼容请求名。两种请求都返回 `file.upload.request.result`。
+- `request_id` 是客户端生成的非零 UUID，同一设备重试同一申请时复用。
+- `size_bytes` 是密文字节数，必须是正整数且在 PostgreSQL `BIGINT` 范围内。
+- `sha256_hex` 可省略。提供时必须是密文 SHA-256 的 64 个十六进制字符。
+
+### 26.1 首次成功与重试
+
+```json
+{
+  "type": "file.upload.request.result",
+  "request_id": "4ae3f215-7c68-49b9-9e1f-c19f9446a107",
+  "success": true,
+  "attachment_id": "09ecaabc-31b3-4167-b65c-d3747e268200",
+  "upload_id": "712f090e-025a-488c-a0d7-813716afc4aa",
+  "upload_state": "authorized",
+  "expires_at": "2026-11-11T22:10:00.000000Z",
+  "upload_url": "/upload_file",
+  "upload_token": "<短期凭据原文>",
+  "credential_version": 1,
+  "method": "PUT",
+  "required_headers": {"Content-Type": "application/octet-stream"}
+}
+```
+
+服务端在一个事务内创建附件和上传任务，首次许可有效期为 10 分钟，数据库保存上传凭据的哈希。相同设备以相同 `request_id`、大小和摘要重试时，返回已有的附件 ID、任务 ID、状态和截止时间。重试响应省略上传凭据及上传地址，任务仍为 `authorized` 且未过期时带 `requires_renew: true`。同一个请求 ID 换了大小或摘要会返回冲突。
+
+**当前源码已接通许可申请。** HTTP `PUT /upload_file` 的授权仍是占位，返回 `503 upload_authorization_not_implemented`。`requires_renew` 表示原任务符合续签条件，续签、状态查询、取消和文件发布仍见[附件协议草案](file-storage/attachment-protocol.md)。
+
+### 26.2 错误响应
+
+申请失败返回 `file.upload.request.result`、`success: false` 和 `error: {code, message}`。如果已解析出有效的 `request_id`，会把它带回。公共 Token 和会话检查还可能返回 `type: "error"`，客户端也需要处理。
+
+| `error.code` | 条件 |
+| --- | --- |
+| `invalid_request` | 请求 ID、大小或摘要无效 |
+| `upload_permission_denied` | 事务内校验发现账号或设备无效，或设备归属不符 |
+| `upload_request_conflict` | 同一设备以同一个请求 ID 提交了不同的大小或摘要 |
+| `server_busy` | 业务任务未能入队 |
+| `database_unavailable` / `retry_later` | 数据库连接故障或可重试的事务冲突，使用原请求 ID 重试 |
+| `upload_permission_failed` / `internal_server_error` | 创建许可时遇到其他数据库错误或意外异常 |

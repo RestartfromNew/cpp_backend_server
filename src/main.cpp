@@ -37,6 +37,8 @@
 #include "websocket/WebSocketDispatcher.h"
 #include "service/ServiceThreadPool.h"
 #include "repository/EnvelopeRepository.h"
+#include "repository/FileRepository.h"
+#include "service/FileService.h"
 namespace {
 // Block before starting ANY background thread. Main consumes signals as data;
 // no mutex, logging, or join is executed inside a signal handler.
@@ -126,7 +128,9 @@ int main()
         WebSocketPoolConfig web_socket_pool_config{8,100};
         EnvelopeRepository envelopeRepository{databasePool};
         ChatService chat_service{envelopeRepository};
-        ServiceThreadPool service_thread_pool(4, chat_service);
+        FileRepository file_repository{databasePool};
+        FileService file_service{file_repository};
+        ServiceThreadPool service_thread_pool(4, chat_service, file_service);
         SessionIdentityService sessionIdentityService{userRepository};
         WebSocketDispatcher web_socket_dispatcher(service_thread_pool, authMiddleWare, sessionIdentityService,
             [&userService](const boost::uuids::uuid& user_id, std::string_view jpeg_bytes) {

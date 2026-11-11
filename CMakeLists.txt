@@ -111,6 +111,10 @@ add_executable(cpp_backend_server src/main.cpp
         include/file/DiskOperation.h
         src/file/UploadHttpParser.cpp
         include/file/UploadHttpParser.h
+        src/service/FileService.cpp
+        include/service/FileService.h
+        src/repository/FileRepository.cpp
+        include/repository/FileRepository.h
 )
 target_include_directories(
         cpp_backend_server

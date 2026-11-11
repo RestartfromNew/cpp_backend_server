@@ -7,8 +7,8 @@
 
 #include <stdexcept>
 #include <iostream>
-ServiceThreadPool::ServiceThreadPool(int count, ChatService& service)
-    : chatService(service), threadCount(count) {
+ServiceThreadPool::ServiceThreadPool(int count, ChatService& service,FileService &fileService)
+    : chatService(service), threadCount(count),fileService(fileService) {
     if (count <= 0) throw std::invalid_argument("Thread count must be positive");
 }
 

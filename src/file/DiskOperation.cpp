@@ -12,6 +12,7 @@
 DiskWriteResult DiskOperation::writeBlock(const DiskWriteTask& task) {
     DiskWriteResult result{};
     result.identity = task.identity;
+    //偏移量
     result.offset = task.offset;
 
     if (!task.file || !task.file->valid()) {
@@ -37,15 +38,18 @@ DiskWriteResult DiskOperation::writeBlock(const DiskWriteTask& task) {
         const auto count = std::min(remaining, static_cast<std::size_t>(std::numeric_limits<ssize_t>::max()));
 
         // 使用文件 fd，不使用监听 socket fd 或连接 socket fd。
+        //从data已经完成的completed偏移量开始写
         const ssize_t written = ::pwrite(task.file->get(), task.data.data() + completed, count, static_cast<off_t>(task.offset + completed));
 
         if (written == -1) {
             const int error = errno;
 
             if (error == EINTR) {
+                //信号中断
                 continue;
             }
 
+            //其它的error
             result.error = std::error_code(error, std::generic_category());
             break;
         }
