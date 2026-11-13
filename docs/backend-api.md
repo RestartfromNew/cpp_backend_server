@@ -1802,7 +1802,19 @@ Alice 通过 HTTP 或 WebSocket 更换头像后，服务端在数据库提交成
 | 411 / 415 | `missing_upload_content_length` / `invalid_upload_content_type` | 缺少长度或媒体类型不匹配 |
 | 500 / 503 | `upload_verification_failed` / `upload_verification_unavailable` | 校验抛出异常或任务无法入队 |
 
-**当前实现进度**。许可校验通过后，Reactor 保留连接。任务认领、打开临时文件和读取正文仍待接入，因此目前还没有上传完成响应。
+数据库提交后返回 HTTP `200 OK`。响应中的状态表示附件已发布，可以提交引用它的聊天信封。摘要不匹配返回 `400 upload_digest_mismatch`，正文未收齐时按 EOF 或超时分别返回 `400 incomplete_upload_body` 或 `408 upload_body_timeout`。文件发布或完成事务失败返回 `500 upload_finalization_failed`。
+
+```json
+{
+  "success": true,
+  "code": "upload_completed",
+  "upload_id": "712f090e-025a-488c-a0d7-813816afc4aa",
+  "attachment_id": "09ecaabc-31b3-4167-b65c-d3747e268200",
+  "size_bytes": 182430,
+  "upload_state": "completed",
+  "attachment_state": "ready"
+}
+```
 
 ### 26.4 Nginx 转发与连通性检查
 
@@ -1827,3 +1839,33 @@ curl -i --max-time 5 https://aittelegramapi.uk/upload_file
 ```
 
 两条 GET 探测都返回 `405 upload_method_not_allowed` 时，说明直连和反向代理都已到达上传 Reactor。
+
+### 26.5 iOS 发送附件
+
+1. **生成密文文件。** 客户端使用附件协议的文件密钥和认证加密，将图片或文件写成可重读的本地密文文件。用密文长度填写 `size_bytes`，可选的 `sha256_hex` 也对同一份密文计算。保留密文和此次申请的 `request_id`，供后续查询或重试。
+2. **申请许可。** 在当前活跃设备的 WebSocket 发送 `file.upload.request`，按 `request_id` 匹配结果。首次成功后保存 `upload_id`、`attachment_id`、`upload_token` 和 `expires_at`。上传凭据只用于这笔上传，避免写入日志。
+3. **上传密文。** 将 `upload_url` 相对 HTTPS 基址解析为 URL。可用 `URLSession.uploadTask(with:fromFile:)` 直接上传本地密文文件。设置 `PUT` 和第 26.3 节的请求头，正文长度以密文文件为准。上传进度只表示客户端发送进度。
+4. **确认后端发布。** 收到 HTTP `200` 后，检查 `code == "upload_completed"`、`upload_state == "completed"` 和 `attachment_state == "ready"`，再核对响应里的两个 UUID 和字节数与本次上传一致。当前 Reactor 在写完正文后等上游 EOF 或约 30 秒空闲期，再开始最终校验。Nginx 上游保持打开时，即使客户端已发完也可能有这段等待。
+5. **发送消息信封。** 将 `attachment_id`、原始文件名、文件类型、文件密钥和解密参数放入消息明文，使用现有设备会话对每个目标设备分别做认证加密，得到各自的 `packet_base64`。文件密文只需上传一次。对每个设备沿用 `chat.newTextMessage`，外层携带 `attachment_ids`。
+
+```json
+{
+  "type": "chat.newTextMessage",
+  "authorization": "Bearer <access_token>",
+  "message_id": "<logical_message_uuid>",
+  "sender_device_id": "<current_device_uuid>",
+  "recipient_device_id": "<recipient_device_uuid>",
+  "protocol_version": "<existing_envelope_protocol_version>",
+  "packet_base64": "<recipient-specific encrypted envelope>",
+  "attachment_ids": ["09ecaabc-31b3-4167-b65c-d3747e268200"]
+}
+```
+
+同一逻辑消息使用稳定的 `message_id`。向同一目标设备重试时保留该设备原来的密文包、协议版本和附件 ID 集合。外层列表最多 16 个不同的非零 UUID。服务端只接受由当前发送设备上传且仍有效的 `ready` 附件。首次绑定信封后保留 7 天，后续引用不会延长。尚未绑定信封的 `ready` 附件有 1 天的引用期限。
+
+### 26.6 iOS 接收附件与失败恢复
+
+- 在线接收从 `Online_Sync.envelope` 取信封，断线后使用 `chat.sync.envelope`。两种路径都返回 `packet_base64` 和 `attachment_ids`，普通消息的附件列表为空。信封可靠保存后可继续使用现有 ACK。
+- 接收端先使用本机设备会话对 `packet_base64` 做认证解密，然后核对明文里的附件 ID 和外层列表。通过检查后，可用原始文件名显示附件占位。**下载 Reactor 和下载 API 尚待接入**。接入后，客户端再申请下载密文，并用信封中解出的文件密钥在本地做认证解密。
+- 上传响应丢失或超时后，使用原 `request_id`、`size_bytes` 和原摘要重新发送 `file.upload.request`。如果返回原任务 `completed`，可用原 `attachment_id` 继续发送信封。如果仍是 `receiving`，等待后再查询，避免并发重发 PUT。任务失败或许可失效后，使用新的 `request_id` 重新申请。对于仍为 `authorized` 的任务，若原 token 丢失，当前没有续签接口可恢复原 token，可用新请求 ID 重新申请。
+- 部署前执行 `003_envelope_attachments.sql`，并确认后端运行角色具有表的 `SELECT` 和 `INSERT` 权限。普通消息同步也会使用这张表。

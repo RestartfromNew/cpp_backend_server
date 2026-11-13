@@ -325,7 +325,8 @@ int main()
         ThreadPool thread_pool(thread_pool_config,server,router,web_socket_pool);
         constexpr int upload_port = 8084;
         DiskPool disk_pool{4, 16};
-        UploadReactor upload_reactor{upload_port, disk_pool, authMiddleWare, file_service};
+        UploadReactor upload_reactor{upload_port, disk_pool, authMiddleWare, file_service,
+            [&service_thread_pool](auto task) { service_thread_pool.receiveTask(std::move(task)); }};
         if (!thread_pool.init())
             throw std::runtime_error("Thread pool initialization failed");
         if (!web_socket_pool.init())
@@ -347,7 +348,11 @@ int main()
             backend::logging::Logger::write(backend::logging::Level::Info, "server", "ready");
             thread_pool.running([&] { return upload_failed.load() || stopSignals.requested(); });
         } catch (...) {
+            upload_thread.request_stop();
+            upload_thread.join();
+            disk_pool.close();
             service_thread_pool.close();
+            upload_reactor.settleStoppedUploads();
             throw;
         }
         server.stop();
@@ -357,6 +362,7 @@ int main()
         upload_thread.join();
         disk_pool.close();
         service_thread_pool.close();
+        upload_reactor.settleStoppedUploads();
         web_socket_pool.close();
         std::cout << "[server] all workers joined; closing database pool\n";
         databasePool.close();

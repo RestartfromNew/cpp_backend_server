@@ -9,6 +9,8 @@
 #include <mutex>
 #include <queue>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 #include "domain/UploadPermission.h"
 

@@ -7,6 +7,13 @@
 #include <string>
 #include <variant>
 
+struct ClaimedUpload {
+    boost::uuids::uuid upload_id;
+    boost::uuids::uuid attachment_id;
+    std::string storage_key;
+    std::string expected_sha256_hex;
+};
+
 enum class VerifyPermissionResult {
     Allowed,
     AccessTokenExpired,
@@ -23,6 +30,7 @@ enum class VerifyPermissionResult {
     Pending,
     QueueUnavailable,
     VerificationFailed,
+    DigestMismatch,
     NotImplemented
 };
 

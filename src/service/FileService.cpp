@@ -38,6 +38,19 @@ namespace {
 }
 FileService::FileService(FileRepository& fileRepository) : fileRepository_(fileRepository) {}
 
+std::variant<VerifyPermissionResult, ClaimedUpload> FileService::claimUpload(const boost::uuids::uuid& user_id,
+    const boost::uuids::uuid& upload_id, const std::string& upload_token, std::uint64_t content_length) {
+    return fileRepository_.claimUpload(user_id, upload_id, hashUploadToken(upload_token), content_length);
+}
+
+bool FileService::finishUpload(const boost::uuids::uuid& upload_id, std::uint64_t size, const std::string& digest) {
+    return fileRepository_.finishUpload(upload_id, size, digest);
+}
+
+void FileService::failUpload(const boost::uuids::uuid& upload_id, const std::string& code) {
+    fileRepository_.failUpload(upload_id, code);
+}
+
 VerifyPermissionResult FileService::verifyUploadPermission(const boost::uuids::uuid& user_id,
     const boost::uuids::uuid& upload_id, const std::string& upload_token, std::uint64_t content_length) {
     if (user_id.is_nil()) return VerifyPermissionResult::Unauthorized;

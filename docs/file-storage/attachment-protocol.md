@@ -131,7 +131,7 @@ HTTP 可以返回 202 verifying，iOS 不应据此发送信封。文件 ready �
 }
 ```
 
-完整正文经各目标设备会话分别加密成 packet，继续使用现有 chat.newTextMessage、Online_Sync、chat.sync.envelope、chat.envelopes.ack。当前 type 名称含 Text 也不要求先重构整个协议；实现时给外层加 attachment_ids 并定义兼容默认 []。
+完整正文经各目标设备会话分别加密成 packet，继续使用现有 `chat.newTextMessage`、`Online_Sync`、`chat.sync.envelope` 和 `chat.envelopes.ack`。发送时在 JSON 外层添加 `attachment_ids`，最多 16 个不重复的非零 UUID，省略时按空数组处理。在线推送和离线同步都返回这个数组。首次绑定开始计算 7 天保留期。
 
 server 保存的是信封和外层附件关联，不是明文上述 JSON；附件密钥、原始文件名/MIME 只放加密正文，iOS 验证内外 ID 一致。多设备共用同一个文件密文和文件密钥，各自信封分别加密。重试保持相同 message_id、packet 与附件集合，不能重新推进会话或重新生成密文。
 
@@ -139,7 +139,7 @@ server 保存的是信封和外层附件关联，不是明文上述 JSON；附�
 
 ## 7. Bob 下载与状态分离
 
-Bob 收到信封后解密描述，先保存消息并显示占位，按设置自动下载或等待点击。附件 ID 不是通行证：HTTP 下载授权检查 active 设备和 envelope_attachments 中的接收授权；头像走独立普通读取接口。
+Bob 收到信封后先用本机设备会话认证解密。只有解密成功且明文中的附件 ID 与外层 `attachment_ids` 匹配时，客户端才开始下载。信封可先保存并显示占位。后续 HTTP 下载授权会检查 active 设备和 `envelope_attachments` 中的接收授权。
 
 建议 POST /request_file_download 提交 attachment_id 与当前设备身份材料，返回自有 HTTP 下载地址和短期授权，实际下载入口再次校验。原始文件字节不走 WebSocket，使用有界 HTTP 流式读取。当前版本不做 Range 或字节断点续传。
 

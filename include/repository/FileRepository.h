@@ -17,6 +17,10 @@ public:
         const std::string& token_hash_hex, const UploadPermissionRequest& request);
     [[nodiscard]] VerifyPermissionResult verifyUploadPermission(const boost::uuids::uuid& user_id,
         const boost::uuids::uuid& upload_id, const std::string& token_hash_hex, std::uint64_t content_length);
+    std::variant<VerifyPermissionResult, ClaimedUpload> claimUpload(const boost::uuids::uuid& user_id,
+        const boost::uuids::uuid& upload_id, const std::string& token_hash_hex, std::uint64_t content_length);
+    bool finishUpload(const boost::uuids::uuid& upload_id, std::uint64_t size, const std::string& digest);
+    void failUpload(const boost::uuids::uuid& upload_id, const std::string& code);
 
 private:
     DatabasePool& pool_;

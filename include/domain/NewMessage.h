@@ -10,6 +10,7 @@ struct NewTextMessageRequest {
     boost::uuids::uuid recipient_device_id;
     std::string protocol_version;
     std::vector<std::uint8_t> packet;
+    std::vector<boost::uuids::uuid> attachment_ids;
 };
 
 #endif

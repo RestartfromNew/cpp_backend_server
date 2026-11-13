@@ -1676,7 +1676,19 @@ The body contains raw ciphertext bytes. The parser requires an explicit `Content
 | 411 / 415 | `missing_upload_content_length` / `invalid_upload_content_type` | Missing length or unsupported media type |
 | 500 / 503 | `upload_verification_failed` / `upload_verification_unavailable` | Verification threw an exception or could not be queued |
 
-**Current implementation status.** The Reactor keeps the connection open when verification passes. Task claiming, opening a temporary file, and reading the body are still pending, so the endpoint has no upload completion response yet.
+The server returns HTTP `200 OK` after the database commit. The response identifies an attachment ready for a chat envelope. A digest mismatch returns `400 upload_digest_mismatch`. An incomplete body returns `400 incomplete_upload_body` on EOF or `408 upload_body_timeout` on idle timeout. Publication or completion failure returns `500 upload_finalization_failed`.
+
+```json
+{
+  "success": true,
+  "code": "upload_completed",
+  "upload_id": "712f090e-025a-488c-a0d7-813816afc4aa",
+  "attachment_id": "09ecaabc-31b3-4167-b65c-d3747e268200",
+  "size_bytes": 182430,
+  "upload_state": "completed",
+  "attachment_state": "ready"
+}
+```
 
 ### 26.4 Nginx proxying and connectivity checks
 
@@ -1701,3 +1713,33 @@ curl -i --max-time 5 https://aittelegramapi.uk/upload_file
 ```
 
 A `405 upload_method_not_allowed` response from both GET probes confirms that the direct and proxied requests reached the upload Reactor.
+
+### 26.5 Sending an attachment from iOS
+
+1. **Create a ciphertext file.** Use the file key and authenticated encryption defined by the attachment protocol. Save the ciphertext to a local file that can be read again. Set `size_bytes` to the ciphertext length and, if supplied, calculate `sha256_hex` over the same bytes. Keep the file and `request_id` for retries.
+2. **Request a permit.** Send `file.upload.request` from the active device's WebSocket and correlate the result by `request_id`. Save the initial `upload_id`, `attachment_id`, `upload_token`, and `expires_at`. Keep the upload credential out of logs.
+3. **Upload the ciphertext.** Resolve `upload_url` against the HTTPS API base URL. Use a file-backed request such as `URLSession.uploadTask(with:fromFile:)` with `PUT` and the headers in Section 26.3. The local ciphertext file determines the body length. Client upload progress measures transmission progress.
+4. **Confirm publication.** After HTTP `200`, check `code == "upload_completed"`, `upload_state == "completed"`, and `attachment_state == "ready"`. Match both UUIDs and the byte count to the upload. The current Reactor waits for upstream EOF or about 30 seconds of idle time after writing the body before finalizing. Nginx can keep the upstream connection open during that wait.
+5. **Send the message envelope.** Put the attachment ID, original filename, file type, file key, and decryption parameters in the message plaintext. Use the existing per-device session to authenticate and encrypt a separate `packet_base64` for each target device. Upload the file ciphertext once. Use the existing `chat.newTextMessage` route with outer `attachment_ids` for each target.
+
+```json
+{
+  "type": "chat.newTextMessage",
+  "authorization": "Bearer <access_token>",
+  "message_id": "<logical_message_uuid>",
+  "sender_device_id": "<current_device_uuid>",
+  "recipient_device_id": "<recipient_device_uuid>",
+  "protocol_version": "<existing_envelope_protocol_version>",
+  "packet_base64": "<recipient-specific encrypted envelope>",
+  "attachment_ids": ["09ecaabc-31b3-4167-b65c-d3747e268200"]
+}
+```
+
+Use one stable `message_id` per logical message. When retrying to the same device, reuse that device's original encrypted packet, protocol version, and attachment ID set. The outer list permits up to 16 unique non-nil UUIDs. Each attachment must be ready, within its retention window, and uploaded by the sending device. An unreferenced ready attachment has a one-day reference window. Its first envelope starts a seven-day retention period. Further references leave that deadline intact.
+
+### 26.6 Receiving attachments and recovering from failures
+
+- Read online envelopes from `Online_Sync.envelope`. Use `chat.sync.envelope` to catch up after reconnecting. Both paths return `packet_base64` and `attachment_ids`. Ordinary messages carry an empty attachment list. Use the existing ACK after the envelope has been stored reliably.
+- Authenticate and decrypt `packet_base64` with the receiving device's session, then compare the decrypted attachment IDs with the outer list. After the check passes, use the decrypted name to display a placeholder. **The download Reactor and API are pending**. When available, request the ciphertext and authenticate and decrypt it locally using the file key from the envelope.
+- If the upload response is lost or times out, resend `file.upload.request` with the original request ID, size, and optional digest. An existing `completed` task lets the client proceed with its original attachment ID. If it is still `receiving`, wait and query again before attempting another upload. Use a new request ID after failure or expiry. If the original token was lost while the task is still `authorized`, request a new permit with a new request ID because renewal is pending.
+- Apply `003_envelope_attachments.sql` before deployment and grant the backend role `SELECT` and `INSERT` on the table. Ordinary message synchronization also queries it.

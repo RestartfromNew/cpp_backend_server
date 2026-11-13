@@ -43,10 +43,12 @@ FILE_STORAGE_ROOT=/srv/chat-files
 
 staging/avatars/<request_id>.part                 单次头像请求原图
 staging/avatars/<request_id>.processed            重编码结果
-staging/attachments/<attachment_id>/<upload_id>.part
+staging/attachments/<前2位>/<次2位>/<upload_id>.part
 objects/avatars/<前2位>/<次2位>/<avatar_id>.jpg
 objects/attachments/<前2位>/<次2位>/<attachment_id>.bin
 ```
+
+dev 环境设置 `FILE_STORAGE_ROOT=/home/developer/.local/share/cpp-backend-dev/files`。头像在 `objects/avatars`，聊天密文在 `objects/attachments`。暂存目录按 `upload_id` 分片，正式目录按 `attachment_id` 分片。原始文件名由客户端放进加密 envelope 的正文，接收端解密后用于显示。
 
 头像 request_id 只是服务器内部临时文件/日志标识，不是数据库上传任务、不发上传凭据。所有 ID 和 key 都由服务器生成；不使用原始文件名拼路径。数据库只存相对正式 key，不存绝对路径或永久下载 URL。暂存与正式目录位于同一文件系统，发布采用不覆盖语义。FileStorage 应限制根目录、拒绝符号链接和路径穿越。
 

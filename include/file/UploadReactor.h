@@ -44,10 +44,13 @@ private:
     UniqueFd incoming_connection_listen_fd_;
     std::queue<DiskWriteResult> disk_pool_task_response_queue_;
     AuthMiddleWare &auth_middle_ware_;
-    DiskOperation disk_operation_;
+    FileService& file_service_;
+    std::function<void(Task)> submit_business_;
     struct VerificationCompletion {
         WriteTaskIdentity identity;
         VerifyPermissionResult result;
+        std::optional<ClaimedUpload> claim;
+        bool finalized = false;
     };
     struct VerificationQueue {
         std::mutex mutex;
@@ -72,15 +75,21 @@ private:
         const boost::uuids::uuid& upload_id, const std::string& upload_token, std::uint64_t content_length);
     void handleVerificationResult(int connection_socket_fd, VerifyPermissionResult result);
     void drainVerificationResults();
+    bool watchBody(int fd, bool enabled);
+    void verifyReceivedBody(int fd, UploadSession& session, bool timed_out);
+    void failClaim(const boost::uuids::uuid& id, const std::string& code) noexcept;
+    void notifyVerification(VerificationCompletion completion);
 
 
 public:
-    UploadReactor(int port, DiskPool& disk_pool, AuthMiddleWare& auth_middle_ware, FileService& file_service);
+    UploadReactor(int port, DiskPool& disk_pool, AuthMiddleWare& auth_middle_ware, FileService& file_service,
+        std::function<void(Task)> submit_business);
     ~UploadReactor();
     bool init();
     void run(); // 阻塞运行事件循环；由外部管理线程调用，不在构造函数中阻塞。
     void close(); // 唤醒并停止 run()；所有者等 run() 返回后再销毁对象。
-    void createFile();
+    void settleStoppedUploads(); // 停止 Reactor 并排空线程池后调用。
+    bool createFile(UploadSession& session);
     void pushWrite();
     bool submitWrite(UploadSession& session);
 

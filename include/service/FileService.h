@@ -13,6 +13,10 @@ public:
         const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id, const UploadPermissionRequest& request);
     [[nodiscard]] VerifyPermissionResult verifyUploadPermission(const boost::uuids::uuid& user_id,
         const boost::uuids::uuid& upload_id, const std::string& upload_token, std::uint64_t content_length);
+    std::variant<VerifyPermissionResult, ClaimedUpload> claimUpload(const boost::uuids::uuid& user_id,
+        const boost::uuids::uuid& upload_id, const std::string& upload_token, std::uint64_t content_length);
+    bool finishUpload(const boost::uuids::uuid& upload_id, std::uint64_t size, const std::string& digest);
+    void failUpload(const boost::uuids::uuid& upload_id, const std::string& code);
 
 private:
     FileRepository& fileRepository_;

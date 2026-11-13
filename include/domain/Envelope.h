@@ -17,6 +17,7 @@ struct Envelope {
     std::string protocol_version;
     std::vector<std::uint8_t> packet;
     std::int64_t seq;
+    std::vector<boost::uuids::uuid> attachment_ids;
 
 };
 /** @brief 同步分页结果；空列表是合法成功，has_more 指示继续按游标拉取，不能当作身份拒绝。 */

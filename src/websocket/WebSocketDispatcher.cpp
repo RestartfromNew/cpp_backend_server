@@ -19,6 +19,12 @@
 #include "domain/UploadPermission.h"
 namespace {
 
+nlohmann::json serializeAttachmentIds(const Envelope& envelope) {
+    auto ids = nlohmann::json::array();
+    for (const auto& id : envelope.attachment_ids) ids.push_back(boost::uuids::to_string(id));
+    return ids;
+}
+
 std::string encodePacketBase64(const std::vector<std::uint8_t>& bytes) {
     constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string encoded;
@@ -354,6 +360,7 @@ void WebSocketDispatcher::dispatch(const boost::uuids::uuid &session_device_id,c
                                     boost::uuids::to_string(envelope.recipient_device_id)},
                                 {"protocol_version", envelope.protocol_version},
                                 {"packet_base64", encodePacketBase64(envelope.packet)},
+                                {"attachment_ids", serializeAttachmentIds(envelope)},
                                 {"seq", envelope.seq}
                             };
                             response["seq"] = result.envelope->seq;
@@ -483,6 +490,7 @@ void WebSocketDispatcher::dispatch(const boost::uuids::uuid &session_device_id,c
                                 {"recipient_device_id", boost::uuids::to_string(envelope.recipient_device_id)},
                                 {"protocol_version", envelope.protocol_version},
                                 {"packet_base64", encodePacketBase64(envelope.packet)},
+                                {"attachment_ids", serializeAttachmentIds(envelope)},
                                 {"seq", envelope.seq}
                             });
                         }
@@ -661,6 +669,19 @@ std::optional<ParsedNewMessage>WebSocketDispatcher::parseNewMessage(const nlohma
                 }
 
         parsed.request.packet = requirePacket(payload);
+        if (const auto ids = payload.find("attachment_ids"); ids != payload.end()) {
+            if (!ids->is_array() || ids->size() > 16) {
+                throw std::invalid_argument("attachment_ids must be an array of at most 16 UUIDs");
+            }
+            std::set<std::string> unique_ids;
+            for (const auto& value : *ids) {
+                const auto id = requireUuid(nlohmann::json{{"id", value}}, "id");
+                if (id.is_nil() || !unique_ids.insert(boost::uuids::to_string(id)).second) {
+                    throw std::invalid_argument("attachment_ids must contain unique non-nil UUIDs");
+                }
+                parsed.request.attachment_ids.push_back(id);
+            }
+        }
         return parsed;
     } catch (const std::invalid_argument& error) {
         reply(nlohmann::json{

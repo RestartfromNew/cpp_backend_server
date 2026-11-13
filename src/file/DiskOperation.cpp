@@ -63,12 +63,14 @@ DiskWriteResult DiskOperation::writeBlock(const DiskWriteTask& task) {
         completed += static_cast<std::size_t>(written);
     }
 
+    result.work_type=DiskWorkType::WriteDisk;
     result.written_bytes = completed;
     return result;
 }
 
 DiskWriteResult DiskOperation::OpenTempFile(const DiskWriteTask& task) {
     DiskWriteResult result{};
+    result.work_type = DiskWorkType::OpenFile;
     result.identity = task.identity;
 
     if (task.temp_path.empty() || task.temp_path.find('\0') != std::string::npos) {

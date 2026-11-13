@@ -275,10 +275,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/file/DiskOperation.cpp
         src/file/DiskPool.cpp
         src/file/UploadHttpParser.cpp
-        src/file/UploadReactor.cpp)
-    target_include_directories(upload_reactor_disk_smoke_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+        src/file/UploadReactor.cpp
+        src/http/AuthMiddleWare.cpp
+        src/Auth/AccessTokenService.cpp
+        src/service/FileService.cpp
+        src/repository/FileRepository.cpp
+        src/databases/DatabasePool.cpp
+        src/databases/DatabaseConnection.cpp
+        src/databases/DatabaseResult.cpp
+        src/databases/DatabaseError.cpp
+        src/databases/ConnectionLease.cpp)
+    target_include_directories(upload_reactor_disk_smoke_test PRIVATE ${PROJECT_SOURCE_DIR}/include ${SODIUM_INCLUDE_DIRS})
     target_compile_definitions(upload_reactor_disk_smoke_test PRIVATE UPLOAD_TEST_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
-    target_link_libraries(upload_reactor_disk_smoke_test PRIVATE Threads::Threads Boost::headers)
+    target_link_libraries(upload_reactor_disk_smoke_test PRIVATE Threads::Threads Boost::headers
+        PostgreSQL::PostgreSQL jwt-cpp::jwt-cpp nlohmann_json::nlohmann_json ${SODIUM_LIBRARIES})
     add_test(NAME upload_reactor_disk_smoke COMMAND upload_reactor_disk_smoke_test)
     set_tests_properties(upload_reactor_disk_smoke PROPERTIES TIMEOUT 20)
 endif()

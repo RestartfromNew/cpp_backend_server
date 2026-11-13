@@ -100,7 +100,7 @@ Content-Length: 处理后的 JPEG 字节数
 PUT /upload_file 带正常身份、X-Upload-ID、X-Upload-Token、Content-Length，正文为 iOS 已加密的字节。只支持明确长度的原始正文，不支持首版 multipart、压缩或 chunked；解析器/代理一致拒绝歧义请求头。
 
 - 请求头有界读取，资格查询与文件创建交给有界执行器，不能在 Reactor 查库或阻塞磁盘。authorized→receiving 条件更新仅一个连接成功。
-- staging/attachments/attachment_id/upload_id.part 独占创建；头部已读取的正文前缀先交给同一计数管线，不丢失、不重复。
+- 临时文件在 `staging/attachments/<upload_id 前两位>/<接下来两位>/<upload_id>.part` 独占创建。头部已读取的正文前缀先交给同一计数管线。
 - 非阻塞 recv → 有界块 → pwrite；单文件一个在途写入，任务持有 RAII 文件/块，不拿可能复用的裸 fd。部分写入/EINTR 循环处理。
 - 写入队列满就暂停对应 EPOLLIN，完成消息经 eventfd 回投所属 Reactor 后公平恢复；没有数据的连接不占专属线程。
 - 检查实际累计大小、提前 EOF、无进展和总期限；磁盘 ENOSPC/EIO 失败。正文按 Content-Length 边界处理，关闭连接，不把额外字节发布到文件或当作流水线请求。

@@ -6,22 +6,28 @@
 #define CPP_BACKEND_SERVER_UPLOADSESSION_H
 #include "common/UniqueFd.h"
 #include "http/HttpRequest.h"
+#include "domain/UploadPermission.h"
 
 #include <boost/uuid/uuid.hpp>
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
-enum class UploadHttpState { ReadingHeaders, WaitingAuthorization, SendingResponse,ReceivingBody };
+enum class UploadHttpState { ReadingHeaders, WaitingAuthorization, SendingResponse, ReceivingBody, Finalizing };
 struct UploadSession {
     boost::uuids::uuid upload_id{}; // 数据库上传任务 ID
+    std::optional<ClaimedUpload> claim;
+    std::string temp_path;
+    std::string final_path;
     std::uint64_t generation = 0;  // 防止 socket fd 复用造成误操作
     UniqueFd socket;               // 拥有网络连接
     std::shared_ptr<UniqueFd> file; // 临时文件；创建完成前为空
     std::uint64_t expected_bytes = 0; // 批准接收的字节数
     std::uint64_t received_bytes = 0; // 已接收的字节数
     std::uint64_t written_bytes = 0;  // 已成功写入的字节数
+    std::chrono::steady_clock::time_point body_deadline{};
     bool write_in_progress = false;  // 当前是否有磁盘写入任务
     std::size_t pending_write_bytes = 0; // 当前在途数据块的长度，供完成结果核对。
     UploadHttpState http_state = UploadHttpState::ReadingHeaders;
@@ -45,9 +51,12 @@ struct DiskWriteTask {
     std::vector<char> data;        // 本次写入的数据，由任务持有。
     std::string temp_path;          // OpenTempFile 使用的服务端生成路径。
 };
-
+enum DiskWorkType {
+    WriteDisk,OpenFile
+};
 // 磁盘池 → Reactor。
 struct DiskWriteResult {
+    DiskWorkType work_type;
     WriteTaskIdentity identity;
     std::uint64_t offset = 0; // 本块开始写入的位置，用于核对当前写入进度。
     std::uint64_t written_bytes = 0; // 本次实际写入量，包括失败前的部分写入。

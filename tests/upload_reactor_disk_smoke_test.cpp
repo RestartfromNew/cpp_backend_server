@@ -142,7 +142,14 @@ int main(int argc, char** argv) {
         std::cout << "[test] source=" << source << " bytes=" << file_size << std::endl;
 
         DiskPool pool{2, 8};
-        UploadReactor reactor{port, pool};
+        DatabasePool database;
+        FileRepository repository{database};
+        FileService service{repository};
+        AccessTokenService tokens{"upload-smoke-test"};
+        AuthMiddleWare auth{tokens};
+        UploadReactor reactor{port, pool, auth, service, [](auto) {
+            throw std::logic_error("Unauthenticated probe reached the business queue");
+        }};
         std::exception_ptr reactor_error;
         std::jthread reactor_thread([&](std::stop_token stop) {
             std::stop_callback stop_reactor(stop, [&] { reactor.close(); });
@@ -158,10 +165,10 @@ int main(int argc, char** argv) {
         std::osyncstream(std::cout) << "[reactor] probing 127.0.0.1:" << port << " PUT /upload_file" << std::endl;
         const auto response = probeReactor(port, file_size);
         std::osyncstream(std::cout) << "[reactor] response: " << response << std::endl;
-        if (!response.starts_with("HTTP/1.1 503 ") || response.find("upload_authorization_not_implemented") == std::string::npos) {
-            throw std::runtime_error("probe did not reach the expected authorization stub");
+        if (!response.starts_with("HTTP/1.1 401 ") || response.find("invalid_access_token") == std::string::npos) {
+            throw std::runtime_error("probe did not reject the missing access token");
         }
-        std::osyncstream(std::cout) << "[reactor] PASS reached authorization stub" << std::endl;
+        std::osyncstream(std::cout) << "[reactor] PASS rejected missing access token" << std::endl;
 
         const auto path = makeTestPath();
         testDiskPool(pool, source, path);

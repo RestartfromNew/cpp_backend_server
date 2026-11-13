@@ -58,6 +58,14 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
     const std::string recipientId = boost::uuids::to_string(request.recipient_device_id);
     const std::string messageId = boost::uuids::to_string(request.message_id);
     const std::string packetHex = encodeHex(request.packet);
+    auto attachmentIds = request.attachment_ids;
+    std::sort(attachmentIds.begin(), attachmentIds.end(), [](const auto& lhs, const auto& rhs) {
+        return boost::uuids::to_string(lhs) < boost::uuids::to_string(rhs);
+    });
+    if (attachmentIds.size() > 16 || std::adjacent_find(attachmentIds.begin(), attachmentIds.end()) != attachmentIds.end() ||
+        (!attachmentIds.empty() && attachmentIds.front().is_nil())) {
+        throw std::invalid_argument("Invalid attachment IDs");
+    }
     ConnectionLease lease(databasePool_);
     return lease.connection().withTransaction([&]() -> NewMessageResult {
         // 同一设备对的序号、幂等判定与 INSERT 必须共享事务锁；提交前不得发送在线通知。
@@ -122,6 +130,15 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
                 existing.value(0, 3) != packetHex) {
                 return {NewMessageStatus::Conflict};
             }
+            const std::string envelopeParameters[] = {std::string{existing.value(0, 0)}};
+            const auto links = lease.connection().execute(R"(
+                SELECT attachment_id FROM app.envelope_attachments
+                WHERE envelope_id = $1::uuid ORDER BY attachment_id
+            )", envelopeParameters);
+            if (links.rowCount() != attachmentIds.size()) return {NewMessageStatus::Conflict};
+            for (std::size_t i = 0; i < attachmentIds.size(); ++i) {
+                if (links.value(i, 0) != boost::uuids::to_string(attachmentIds[i])) return {NewMessageStatus::Conflict};
+            }
             return {NewMessageStatus::Duplicate_request, Envelope{
                 .envelope_id = boost::uuids::string_generator{}(std::string{existing.value(0, 0)}),
                 .message_id = request.message_id,
@@ -129,8 +146,22 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
                 .recipient_device_id = request.recipient_device_id,
                 .protocol_version = request.protocol_version,
                 .packet = request.packet,
-                .seq = parseSeq(existing.value(0, 1))
+                .seq = parseSeq(existing.value(0, 1)),
+                .attachment_ids = attachmentIds
             }};
+        }
+        // 按 UUID 顺序加锁，避免多附件发送和清理并发时交叉锁定。
+        for (const auto& id : attachmentIds) {
+            const std::string parameters[] = {boost::uuids::to_string(id), userId, senderId};
+            const auto allowed = lease.connection().execute(R"(
+                SELECT id FROM app.attachment
+                WHERE id = $1::uuid AND uploader_id = $2::uuid AND uploader_device_id = $3::uuid
+                  AND status = 'ready'
+                  AND (expires_at IS NULL OR expires_at > clock_timestamp())
+                  AND (unreferenced_expires_at IS NULL OR unreferenced_expires_at > clock_timestamp())
+                FOR UPDATE
+            )", parameters);
+            if (allowed.rowCount() != 1) return {NewMessageStatus::PermissionDenied};
         }
         const std::string insertParameters[] = {
             senderId, recipientId, messageId, request.protocol_version, packetHex
@@ -150,6 +181,19 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
         if (inserted.rowCount() != 1) {
             throw std::runtime_error("Insert returned unexpected row count");
         }
+        for (const auto& id : attachmentIds) {
+            const std::string parameters[] = {std::string{inserted.value(0, 0)}, boost::uuids::to_string(id)};
+            (void)lease.connection().execute(R"(
+                INSERT INTO app.envelope_attachments (envelope_id, attachment_id)
+                VALUES ($1::uuid, $2::uuid)
+            )", parameters);
+            (void)lease.connection().execute(R"(
+                UPDATE app.attachment SET unreferenced_expires_at = NULL,
+                    expires_at = COALESCE(expires_at, clock_timestamp() + INTERVAL '7 days'),
+                    updated_at = clock_timestamp()
+                WHERE id = $1::uuid AND unreferenced_expires_at IS NOT NULL
+            )", std::span{parameters}.last<1>());
+        }
         return {NewMessageStatus::Success, Envelope{
             .envelope_id = boost::uuids::string_generator{}(std::string{inserted.value(0, 0)}),
             .message_id = request.message_id,
@@ -157,7 +201,8 @@ NewMessageResult EnvelopeRepository::saveNewMessage(
             .recipient_device_id = request.recipient_device_id,
             .protocol_version = request.protocol_version,
             .packet = request.packet,
-            .seq = parseSeq(inserted.value(0, 1))
+            .seq = parseSeq(inserted.value(0, 1)),
+            .attachment_ids = attachmentIds
         }};
     }); // withTransaction commits before returning the result to Service.
 }
@@ -206,7 +251,9 @@ std::optional<EnvelopePage> EnvelopeRepository::syncEnvelopeRecord(
             )
             SELECT env.envelope_id, env.message_id, env.sender_device_id,
                    env.recipient_device_id, env.protocol_version,
-                   encode(env.packet, 'hex') AS packet_hex, env.seq
+                   encode(env.packet, 'hex') AS packet_hex, env.seq,
+                   COALESCE((SELECT json_agg(ea.attachment_id ORDER BY ea.attachment_id)
+                             FROM app.envelope_attachments ea WHERE ea.envelope_id = env.envelope_id), '[]'::json)
             FROM app.message_envelopes AS env
             LEFT JOIN client_cursors AS cursor
                 ON cursor.peer_device_id = env.sender_device_id
@@ -231,6 +278,9 @@ std::optional<EnvelopePage> EnvelopeRepository::syncEnvelopeRecord(
                 page.has_more = true;
                 break;
             }
+            std::vector<boost::uuids::uuid> attachmentIds;
+            const auto ids = nlohmann::json::parse(result.value(row, 7));
+            for (const auto& id : ids) attachmentIds.push_back(boost::uuids::string_generator{}(id.get<std::string>()));
             page.envelopes.push_back(Envelope{
                 .envelope_id = boost::uuids::string_generator{}(std::string{result.value(row, 0)}),
                 .message_id = boost::uuids::string_generator{}(std::string{result.value(row, 1)}),
@@ -238,7 +288,8 @@ std::optional<EnvelopePage> EnvelopeRepository::syncEnvelopeRecord(
                 .recipient_device_id = boost::uuids::string_generator{}(std::string{result.value(row, 3)}),
                 .protocol_version = std::string{result.value(row, 4)},
                 .packet = std::move(packet),
-                .seq = parseSeq(result.value(row, 6))
+                .seq = parseSeq(result.value(row, 6)),
+                .attachment_ids = std::move(attachmentIds)
             });
             estimatedWireBytes += estimatedRecordBytes;
         }
