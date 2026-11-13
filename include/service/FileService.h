@@ -11,6 +11,8 @@ public:
     explicit FileService(FileRepository& fileRepository);
     std::variant<UploadPermissionError, UploadPermissionGranted> createUploadCredentials(
         const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id, const UploadPermissionRequest& request);
+    [[nodiscard]] VerifyPermissionResult verifyUploadPermission(const boost::uuids::uuid& user_id,
+        const boost::uuids::uuid& upload_id, const std::string& upload_token, std::uint64_t content_length);
 
 private:
     FileRepository& fileRepository_;

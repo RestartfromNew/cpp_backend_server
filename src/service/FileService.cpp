@@ -6,6 +6,7 @@
 #include "common/Logger.h"
 #include "databases/DatabaseError.h"
 #include <array>
+#include <limits>
 #include <sodium.h>
 #include <string_view>
 #include <utility>
@@ -36,6 +37,20 @@ namespace {
 
 }
 FileService::FileService(FileRepository& fileRepository) : fileRepository_(fileRepository) {}
+
+VerifyPermissionResult FileService::verifyUploadPermission(const boost::uuids::uuid& user_id,
+    const boost::uuids::uuid& upload_id, const std::string& upload_token, std::uint64_t content_length) {
+    if (user_id.is_nil()) return VerifyPermissionResult::Unauthorized;
+    if (upload_id.is_nil()) return VerifyPermissionResult::InvalidUploadId;
+    if (upload_token.empty()) return VerifyPermissionResult::MissingUploadToken;
+    if (upload_token.size() != 64 || upload_token.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        return VerifyPermissionResult::InvalidUploadTokenFormat;
+    }
+    if (content_length == 0 || content_length > std::numeric_limits<std::int64_t>::max()) {
+        return VerifyPermissionResult::InvalidContentLength;
+    }
+    return fileRepository_.verifyUploadPermission(user_id, upload_id, hashUploadToken(upload_token), content_length);
+}
 
 std::variant<UploadPermissionError, UploadPermissionGranted> FileService::createUploadCredentials(
     const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id, const UploadPermissionRequest& request) {

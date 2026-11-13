@@ -7,6 +7,25 @@
 #include <string>
 #include <variant>
 
+enum class VerifyPermissionResult {
+    Allowed,
+    AccessTokenExpired,
+    InvalidAccessToken,
+    MissingUploadId,
+    InvalidUploadId,
+    MissingUploadToken,
+    InvalidUploadTokenFormat,
+    InvalidContentLength,
+    NotFound,
+    Unauthorized,
+    ContentLengthMismatch,
+    ConnectionClosed,
+    Pending,
+    QueueUnavailable,
+    VerificationFailed,
+    NotImplemented
+};
+
 struct UploadPermissionRequest {
     boost::uuids::uuid client_request_id{};
     std::int64_t expected_size_bytes = 0;

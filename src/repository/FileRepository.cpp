@@ -13,6 +13,29 @@
 
 FileRepository::FileRepository(DatabasePool& pool) : pool_(pool) {}
 
+VerifyPermissionResult FileRepository::verifyUploadPermission(const boost::uuids::uuid& user_id,
+    const boost::uuids::uuid& upload_id, const std::string& token_hash_hex, std::uint64_t content_length) {
+    backend::logging::Scope operationLog{"FileRepository", "verifyUploadPermission"};
+    const std::string parameters[] = {boost::uuids::to_string(user_id), boost::uuids::to_string(upload_id),
+        token_hash_hex, std::to_string(content_length)};
+    ConnectionLease lease{pool_};
+    const auto result = lease.connection().execute(R"(
+        SELECT (f.upload_token_hash = decode($3::text, 'hex')
+                AND f.state = 'authorized' AND f.expires_at > clock_timestamp()
+                AND u.is_active AND ud.status = 'active' AND a.status = 'uploading') AS permitted,
+               (f.expected_size_bytes = $4::bigint) AS length_matches
+        FROM app.file_uploads AS f
+        JOIN app.users AS u ON u.id = f.uploader_id
+        JOIN app.user_devices AS ud ON ud.device_id = f.uploader_device_id AND ud.user_id = f.uploader_id
+        JOIN app.attachment AS a ON a.id = f.attachment_id
+        WHERE f.uploader_id = $1::uuid AND f.id = $2::uuid
+    )", parameters);
+    if (result.rowCount() == 0) return VerifyPermissionResult::NotFound;
+    if (result.value(0, 0) != "t") return VerifyPermissionResult::Unauthorized;
+    if (result.value(0, 1) != "t") return VerifyPermissionResult::ContentLengthMismatch;
+    return VerifyPermissionResult::Allowed;
+}
+
 std::variant<UploadPermissionError, UploadPermissionGranted> FileRepository::createFileUploadPermission(
     const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id,
     const std::string& token_hash_hex, const UploadPermissionRequest& request) {

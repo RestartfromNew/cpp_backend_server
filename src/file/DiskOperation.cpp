@@ -8,7 +8,7 @@
 #include <fcntl.h>
 #include <limits>
 #include <unistd.h>
-
+DiskOperation::DiskOperation(FileService& file_service) : file_service_(file_service) {}
 DiskWriteResult DiskOperation::writeBlock(const DiskWriteTask& task) {
     DiskWriteResult result{};
     result.identity = task.identity;
@@ -92,4 +92,8 @@ DiskWriteResult DiskOperation::OpenTempFile(const DiskWriteTask& task) {
     file->reset(file_fd);
     result.opened_file = std::move(file);
     return result;
+}
+VerifyPermissionResult DiskOperation::verifyPermission(const boost::uuids::uuid& user_id,
+    const boost::uuids::uuid& upload_id, const std::string& upload_token, const std::uint64_t &content_length) {
+    return file_service_.verifyUploadPermission(user_id, upload_id, upload_token, content_length);
 }

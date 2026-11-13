@@ -13,7 +13,7 @@
 #include <string>
 #include <system_error>
 #include <vector>
-enum class UploadHttpState { ReadingHeaders, WaitingAuthorization, SendingResponse };
+enum class UploadHttpState { ReadingHeaders, WaitingAuthorization, SendingResponse,ReceivingBody };
 struct UploadSession {
     boost::uuids::uuid upload_id{}; // 数据库上传任务 ID
     std::uint64_t generation = 0;  // 防止 socket fd 复用造成误操作

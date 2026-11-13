@@ -1764,7 +1764,7 @@ Alice 通过 HTTP 或 WebSocket 更换头像后，服务端在数据库提交成
 
 服务端在一个事务内创建附件和上传任务，首次许可有效期为 10 分钟，数据库保存上传凭据的哈希。相同设备以相同 `request_id`、大小和摘要重试时，返回已有的附件 ID、任务 ID、状态和截止时间。重试响应省略上传凭据及上传地址，任务仍为 `authorized` 且未过期时带 `requires_renew: true`。同一个请求 ID 换了大小或摘要会返回冲突。
 
-**当前源码已接通许可申请。** HTTP `PUT /upload_file` 的授权仍是占位，返回 `503 upload_authorization_not_implemented`。`requires_renew` 表示原任务符合续签条件，续签、状态查询、取消和文件发布仍见[附件协议草案](file-storage/attachment-protocol.md)。
+`requires_renew` 表示原任务符合续签条件。续签、状态查询、取消和文件发布仍见[附件协议草案](file-storage/attachment-protocol.md)。
 
 ### 26.2 错误响应
 
@@ -1778,3 +1778,52 @@ Alice 通过 HTTP 或 WebSocket 更换头像后，服务端在数据库提交成
 | `server_busy` | 业务任务未能入队 |
 | `database_unavailable` / `retry_later` | 数据库连接故障或可重试的事务冲突，使用原请求 ID 重试 |
 | `upload_permission_failed` / `internal_server_error` | 创建许可时遇到其他数据库错误或意外异常 |
+
+### 26.3 HTTP 上传入口与许可校验
+
+客户端从 HTTPS API 基址解析许可响应中的 `upload_url`。当前返回相对路径 `/upload_file`，使用 `PUT` 请求，携带以下请求头。
+
+| 请求头 | 值 |
+| --- | --- |
+| `Authorization` | `Bearer <access_token>` |
+| `X-Upload-ID` | 许可响应中的非零 UUID `upload_id` |
+| `X-Upload-Token` | 许可响应中的 64 字符十六进制 `upload_token`，原样发送 |
+| `Content-Type` | `application/octet-stream` |
+| `Content-Length` | 密文长度，与申请许可时的 `size_bytes` 一致 |
+
+正文采用原始密文字节。上传解析器要求明确的 `Content-Length`，并拒绝 `Transfer-Encoding`、`Expect` 和重复请求头。Reactor 从 Access Token 取得账号身份，后台校验任务归属、凭据哈希、有效期、任务与附件状态、账号与绑定设备状态，以及声明长度。
+
+| HTTP | `error.code` 示例 | 条件 |
+| --- | --- | --- |
+| 400 | `missing_upload_id` / `invalid_upload_id` / `missing_upload_token` / `invalid_upload_token_format` / `upload_content_length_mismatch` | 缺少凭据、格式不符或长度与许可不符 |
+| 401 | `invalid_access_token` / `access_token_expired` | Access Token 无效或过期 |
+| 403 | `upload_permission_denied` | 许可不可用或身份、凭据不匹配 |
+| 405 | `upload_method_not_allowed` | 请求方法为 `PUT` 以外的方法 |
+| 411 / 415 | `missing_upload_content_length` / `invalid_upload_content_type` | 缺少长度或媒体类型不匹配 |
+| 500 / 503 | `upload_verification_failed` / `upload_verification_unavailable` | 校验抛出异常或任务无法入队 |
+
+**当前实现进度**。许可校验通过后，Reactor 保留连接。任务认领、打开临时文件和读取正文仍待接入，因此目前还没有上传完成响应。
+
+### 26.4 Nginx 转发与连通性检查
+
+后端进程启动时在 `127.0.0.1:8084` 开启上传监听。在现有 HTTPS `server` 块中添加下面的精确路径匹配，和 `location /` 同级。`20m` 为示例代理上限。
+
+```nginx
+location = /upload_file {
+    client_max_body_size 20m;
+    proxy_pass http://127.0.0.1:8084;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_set_header Host $host;
+    proxy_set_header Connection close;
+}
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo ss -ltnp 'sport = :8084'
+curl --noproxy '*' -i --max-time 5 http://127.0.0.1:8084/upload_file
+curl -i --max-time 5 https://aittelegramapi.uk/upload_file
+```
+
+两条 GET 探测都返回 `405 upload_method_not_allowed` 时，说明直连和反向代理都已到达上传 Reactor。
