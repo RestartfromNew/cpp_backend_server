@@ -1638,7 +1638,7 @@ Send a JSON text message over a WebSocket bound to an active device. The server 
 
 The server creates the attachment and upload task in one transaction. The initial permit lasts 10 minutes, and the database stores the credential hash. A retry from the same device with the same request ID, size, and digest returns the existing attachment ID, upload ID, state, and deadline. It omits the upload credential and URL, and includes `requires_renew: true` when the task is still authorized and unexpired. Changing the size or digest for the same request ID returns a conflict.
 
-**The permit request is wired up in the current source.** HTTP `PUT /upload_file` authorization remains a stub that returns `503 upload_authorization_not_implemented`. The `requires_renew` flag identifies an eligible task. Renewal, status, cancellation, and publication remain in the [attachment protocol draft](file-storage/attachment-protocol.md).
+The `requires_renew` flag identifies a task eligible for renewal. Renewal, status, cancellation, and publication remain in the [attachment protocol draft](file-storage/attachment-protocol.md).
 
 ### 26.2 Error responses
 
@@ -1652,3 +1652,52 @@ A failed permit request returns `file.upload.request.result`, `success: false`, 
 | `server_busy` | The service task could not be queued |
 | `database_unavailable` / `retry_later` | Database connection failure or retryable transaction conflict. Retry with the original request ID. |
 | `upload_permission_failed` / `internal_server_error` | Another database error or an unexpected failure while creating the permit |
+
+### 26.3 HTTP upload endpoint and permit verification
+
+Resolve the permit response's `upload_url` against the HTTPS API base URL. The current relative path is `/upload_file`. Send a `PUT` request with these headers.
+
+| Request header | Value |
+| --- | --- |
+| `Authorization` | `Bearer <access_token>` |
+| `X-Upload-ID` | The non-nil `upload_id` UUID from the permit response |
+| `X-Upload-Token` | The original 64-character hexadecimal `upload_token` from the permit response |
+| `Content-Type` | `application/octet-stream` |
+| `Content-Length` | Ciphertext size in bytes, matching the requested `size_bytes` |
+
+The body contains raw ciphertext bytes. The parser requires an explicit `Content-Length` and rejects `Transfer-Encoding`, `Expect`, and duplicate headers. The Reactor gets the account identity from the Access Token. A background task checks upload ownership, credential hash, expiry, task and attachment state, account and bound device status, and declared length.
+
+| HTTP | Example `error.code` | Condition |
+| --- | --- | --- |
+| 400 | `missing_upload_id` / `invalid_upload_id` / `missing_upload_token` / `invalid_upload_token_format` / `upload_content_length_mismatch` | Missing credentials, invalid format, or length differs from the permit |
+| 401 | `invalid_access_token` / `access_token_expired` | Access Token is invalid or expired |
+| 403 | `upload_permission_denied` | Permit is unavailable or the identity or credential does not match |
+| 405 | `upload_method_not_allowed` | Request uses a method other than `PUT` |
+| 411 / 415 | `missing_upload_content_length` / `invalid_upload_content_type` | Missing length or unsupported media type |
+| 500 / 503 | `upload_verification_failed` / `upload_verification_unavailable` | Verification threw an exception or could not be queued |
+
+**Current implementation status.** The Reactor keeps the connection open when verification passes. Task claiming, opening a temporary file, and reading the body are still pending, so the endpoint has no upload completion response yet.
+
+### 26.4 Nginx proxying and connectivity checks
+
+The backend starts the upload listener at `127.0.0.1:8084`. Add this exact path match to the existing HTTPS `server` block alongside `location /`. The `20m` proxy limit is an example.
+
+```nginx
+location = /upload_file {
+    client_max_body_size 20m;
+    proxy_pass http://127.0.0.1:8084;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_set_header Host $host;
+    proxy_set_header Connection close;
+}
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo ss -ltnp 'sport = :8084'
+curl --noproxy '*' -i --max-time 5 http://127.0.0.1:8084/upload_file
+curl -i --max-time 5 https://aittelegramapi.uk/upload_file
+```
+
+A `405 upload_method_not_allowed` response from both GET probes confirms that the direct and proxied requests reached the upload Reactor.

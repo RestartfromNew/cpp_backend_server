@@ -15,6 +15,8 @@ public:
     std::variant<UploadPermissionError, UploadPermissionGranted> createFileUploadPermission(
         const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id,
         const std::string& token_hash_hex, const UploadPermissionRequest& request);
+    [[nodiscard]] VerifyPermissionResult verifyUploadPermission(const boost::uuids::uuid& user_id,
+        const boost::uuids::uuid& upload_id, const std::string& token_hash_hex, std::uint64_t content_length);
 
 private:
     DatabasePool& pool_;

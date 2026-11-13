@@ -10,6 +10,9 @@
 #include <queue>
 #include <stdexcept>
 
+#include "domain/UploadPermission.h"
+
+
 class DiskPool {
     public:
     using Task=std::function<void()>;

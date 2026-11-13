@@ -3,10 +3,14 @@
 #include "file/UploadHttpParser.h"
 #include "common/Logger.h"
 #include <array>
+#include <boost/uuid/string_generator.hpp>
+#include <fcntl.h>
+#include <limits>
 #include <stdexcept>
 #include <unistd.h>
 
-UploadReactor::UploadReactor(int port,DiskPool &disk_pool):port_(port),disk_pool_(disk_pool) {
+UploadReactor::UploadReactor(int port, DiskPool& disk_pool, AuthMiddleWare& auth_middle_ware, FileService& file_service)
+    : disk_pool_(disk_pool), port_(port), auth_middle_ware_(auth_middle_ware), disk_operation_(file_service) {
     if (port_ <= 0 || port_ > 65535) throw std::invalid_argument("invalid upload port");
     init();
 }
@@ -168,19 +172,109 @@ void UploadReactor::dispatchRequest(int connection_socket_fd, UploadSession& ses
         return;
     }
 
+    //在这里的时候才进入解析
     session.http_state = UploadHttpState::WaitingAuthorization;
-    requestUploadAuthorization(connection_socket_fd);
+
+   handleVerificationResult(connection_socket_fd, requestUploadAuthorization(connection_socket_fd));
 }
 
-void UploadReactor::requestUploadAuthorization(int connection_socket_fd) {
-    // TODO：在这里把 session.upload_request 和 declared_bytes 投递给业务线程池，由 Service 校验：
-    // 1. Authorization 身份、设备归属与 active 状态。
-    // 2. X-Upload-ID 对应任务、X-Upload-Token、到期时间、任务状态和批准大小。
-    // 3. 用连接 socket fd + generation 回投结果；只有授权成功才能创建文件 fd、恢复接收正文。
-    // 等待业务结果时应暂停 EPOLLIN；不能在 Reactor 线程查库，也不能把解析成功当成授权成功。
-    // 当前尚未接入 Service，明确返回 503，不创建文件、不执行磁盘任务、不返回上传成功。
-    //投递业务的代码
-    queueResponse(connection_socket_fd, 503, "upload_authorization_not_implemented");
+void UploadReactor::handleVerificationResult(int connection_socket_fd, VerifyPermissionResult result) {
+    switch (result) {
+        case VerifyPermissionResult::Allowed: {
+            const auto iterator = sessionMap.find(connection_socket_fd);
+            if (iterator == sessionMap.end()) return;
+            iterator->second.http_state = UploadHttpState::ReceivingBody;
+            // TODO：认领任务并打开临时文件，再恢复正文读取。
+            return;
+        }
+        case VerifyPermissionResult::Pending:
+            // 验证任务已入队，保留连接以接收最终结果。
+            return;
+        case VerifyPermissionResult::ConnectionClosed:
+            if (sessionMap.contains(connection_socket_fd)) removeSession(connection_socket_fd);
+            return;
+        case VerifyPermissionResult::AccessTokenExpired:
+            return queueResponse(connection_socket_fd, 401, "access_token_expired");
+        case VerifyPermissionResult::InvalidAccessToken:
+            return queueResponse(connection_socket_fd, 401, "invalid_access_token");
+        case VerifyPermissionResult::MissingUploadId:
+            return queueResponse(connection_socket_fd, 400, "missing_upload_id");
+        case VerifyPermissionResult::InvalidUploadId:
+            return queueResponse(connection_socket_fd, 400, "invalid_upload_id");
+        case VerifyPermissionResult::MissingUploadToken:
+            return queueResponse(connection_socket_fd, 400, "missing_upload_token");
+        case VerifyPermissionResult::InvalidUploadTokenFormat:
+            return queueResponse(connection_socket_fd, 400, "invalid_upload_token_format");
+        case VerifyPermissionResult::InvalidContentLength:
+            return queueResponse(connection_socket_fd, 400, "invalid_upload_content_length");
+        case VerifyPermissionResult::ContentLengthMismatch:
+            return queueResponse(connection_socket_fd, 400, "upload_content_length_mismatch");
+        case VerifyPermissionResult::NotFound:
+        case VerifyPermissionResult::Unauthorized:
+            return queueResponse(connection_socket_fd, 403, "upload_permission_denied");
+        case VerifyPermissionResult::NotImplemented:
+            return queueResponse(connection_socket_fd, 503, "upload_authorization_not_implemented");
+        case VerifyPermissionResult::QueueUnavailable:
+            return queueResponse(connection_socket_fd, 503, "upload_verification_unavailable");
+        case VerifyPermissionResult::VerificationFailed:
+            return queueResponse(connection_socket_fd, 500, "upload_verification_failed");
+    }
+    removeSession(connection_socket_fd);
+}
+
+VerifyPermissionResult UploadReactor::requestUploadAuthorization(int connection_socket_fd) {
+    const auto it = sessionMap.find(connection_socket_fd);
+    if (it == sessionMap.end()) {
+        return VerifyPermissionResult::ConnectionClosed;
+    }
+
+    const auto auth = auth_middle_ware_.authenticate(it->second.upload_request);
+    if (const auto* error = std::get_if<AuthError>(&auth.result)) {
+        return *error == AuthError::Expired ? VerifyPermissionResult::AccessTokenExpired : VerifyPermissionResult::InvalidAccessToken;
+    }
+
+    const auto& headers = it->second.upload_request.headers;
+    const auto upload_id_it = headers.find("x-upload-id");
+    if (upload_id_it == headers.end() || upload_id_it->second.empty()) {
+        return VerifyPermissionResult::MissingUploadId;
+    }
+
+    boost::uuids::uuid upload_id{};
+    try {
+        upload_id = boost::uuids::string_generator{}(upload_id_it->second);
+    } catch (const std::runtime_error&) {
+        return VerifyPermissionResult::InvalidUploadId;
+    }
+    if (upload_id.is_nil()) {
+        return VerifyPermissionResult::InvalidUploadId;
+    }
+
+    const auto upload_token_it = headers.find("x-upload-token");
+    if (upload_token_it == headers.end() || upload_token_it->second.empty()) {
+        return VerifyPermissionResult::MissingUploadToken;
+    }
+    const auto& upload_token = upload_token_it->second;
+    if (upload_token.size() != 64 || upload_token.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        return VerifyPermissionResult::InvalidUploadTokenFormat;
+    }
+
+    const auto content_length = it->second.declared_bytes;
+    if (content_length == 0 || content_length > std::numeric_limits<std::int64_t>::max()) {
+        return VerifyPermissionResult::InvalidContentLength;
+    }
+
+
+
+    // 暂停连接 socket fd 的读事件，等待验证结果通过 eventfd 回投。
+    epoll_event event{};
+    event.data.fd = connection_socket_fd;
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, connection_socket_fd, &event) == -1) {
+        return VerifyPermissionResult::QueueUnavailable;
+    }
+    const auto& user_id = std::get<boost::uuids::uuid>(auth.result);
+    const WriteTaskIdentity identity{connection_socket_fd, it->second.generation};
+    return submitVerificationRequest(identity, user_id, upload_id, upload_token, content_length)
+        ? VerifyPermissionResult::Pending : VerifyPermissionResult::QueueUnavailable;
 }
 
 void UploadReactor::queueResponse(int connection_socket_fd, int status, const std::string& code) {
@@ -241,9 +335,7 @@ void UploadReactor::work() {
             const auto flags = events[i].events;
             try {
                 if (event_fd == incoming_connection_listen_fd_.get()) {
-                    //接收新的fd
-                    //这里有一个服务验证的入口，表示此次上传被允许了
-                    //TODO： 完成用户上传许可的验证
+                    // 接收待验证的连接 socket fd，等请求头可读后再取得上传凭据。
                     listen_fd_connection();
                 } else if (event_fd == disk_task_completion_event_fd_) {
                     std::uint64_t value;
@@ -252,14 +344,27 @@ void UploadReactor::work() {
                         if (count > 0 || (count == -1 && errno == EINTR)) continue;
                         break;
                     }
-                    // TODO：取出磁盘/业务完成队列的结果，只在 Reactor 线程更新 Session。
+                    drainVerificationResults();
+                    // TODO：消费磁盘写入完成队列。
                 } else {
                     // 此分支的 event_fd 是连接 socket fd，不是监听 socket fd 或文件 fd。
                     if (flags & (EPOLLERR | EPOLLHUP)) {
+                        //发生错误或者对方关闭连接
                         removeSession(event_fd);
                         continue;
                     }
-                    if (flags & (EPOLLIN | EPOLLRDHUP)) readRequestHeaders(event_fd);
+                    if (flags & (EPOLLIN | EPOLLRDHUP)) {
+                        // 请求头解析完成后进入 requestUploadAuthorization() 做首次业务校验。
+                        // TODO：授权结果回投并确认属于当前 Session 后，在此分派正文读取。
+                        const auto it = sessionMap.find(event_fd);
+                        if (it == sessionMap.end()) continue;
+                        const auto state = it->second.http_state;
+                        if (state == UploadHttpState::ReadingHeaders) {
+                            readRequestHeaders(event_fd);
+                        }
+
+
+                    }
                     if (flags & EPOLLOUT) flushResponse(event_fd);
                 }
             } catch (...) {
@@ -301,7 +406,52 @@ bool UploadReactor::submitWrite(UploadSession& session) {
     session.write_in_progress = true;
     return true;
 }
+bool UploadReactor::submitVerificationRequest(
+    WriteTaskIdentity identity, const boost::uuids::uuid& user_id, const boost::uuids::uuid& upload_id,
+    const std::string& upload_token, std::uint64_t content_length) {
+    // 任务持有独立的通知 fd，Reactor 退出后也不会写到被复用的 fd。
+    UniqueFd notification{::fcntl(disk_task_completion_event_fd_, F_DUPFD_CLOEXEC, 0)};
+    if (!notification.valid()) return false;
+    try {
+        return disk_pool_.receiveTask([operation = disk_operation_, queue = verification_queue_,
+            notification = std::make_shared<UniqueFd>(std::move(notification)), identity,
+            user_id, upload_id, upload_token, content_length]() mutable {
+            auto result = VerifyPermissionResult::VerificationFailed;
+            try {
+                result = operation.verifyPermission(user_id, upload_id, upload_token, content_length);
+            } catch (const std::exception&) {
+                backend::logging::Logger::write(backend::logging::Level::Error, "UploadReactor", "upload_verification_failed");
+            }
+            {
+                std::lock_guard lock(queue->mutex);
+                queue->completions.push({identity, result});
+            }
+            const std::uint64_t value = 1;
+            ssize_t written;
+            do { written = ::write(notification->get(), &value, sizeof(value)); }
+            while (written == -1 && errno == EINTR);
+        });
+    } catch (const std::exception&) {
+        return false;
+    }
+}
 
+void UploadReactor::drainVerificationResults() {
+    std::queue<VerificationCompletion> ready;
+    {
+        std::lock_guard lock(verification_queue_->mutex);
+        ready.swap(verification_queue_->completions);
+    }
+    while (!ready.empty()) {
+        const auto completion = ready.front();
+        ready.pop();
+        const int fd = completion.identity.connection_socket_fd;
+        const auto it = sessionMap.find(fd);
+        if (it == sessionMap.end() || it->second.generation != completion.identity.generation ||
+            it->second.http_state != UploadHttpState::WaitingAuthorization) continue;
+        handleVerificationResult(fd, completion.result);
+    }
+}
 void UploadReactor::postWriteResult(DiskWriteResult disk_write_result) {
 
     {
