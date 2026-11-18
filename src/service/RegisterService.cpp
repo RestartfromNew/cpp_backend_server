@@ -7,13 +7,14 @@
 #include "service/RegisterService.h"
 
 #include <iostream>
+#include <algorithm>
+#include <cstdint>
 
 namespace {
     const std::string EMAIL_PATTERN = "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*" \
         "@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,10}$";
-    //3-20个字符，只能包括英文数字字母和下划线
-    const std::string DISPLAY_NAME="^[A-Za-z0-9_]{3,20}$";
-    const std::string USERNAME_PATTERN="^[A-Za-z0-9_.]{3,30}$";
+    // 用户名使用小写 ASCII，符号可以出现在任意位置。
+    const std::string USERNAME_PATTERN="^[a-z0-9_.-]{3,30}$";
 
 }
 RegisterService::RegisterService(UserRepository& repository):userRepository_{repository} {};
@@ -26,11 +27,15 @@ RegisterResult RegisterService::RegisterUserByEmail( const std::string &email,co
         return RegisterResult{RegisterError::InvalidPassword};
     if (!checkDisplayName(display_name))
         return RegisterResult{RegisterError::InvalidDisplayName};
-    if (!checkUsername(username))
+    auto normalized_username = username;
+    std::transform(normalized_username.begin(), normalized_username.end(), normalized_username.begin(), [](unsigned char character) {
+        return static_cast<char>(character >= 'A' && character <= 'Z' ? character - 'A' + 'a' : character);
+    });
+    if (!checkUsername(normalized_username))
         return RegisterResult{RegisterError::InvalidUsername};
     try {
         std::string password_hash=passwordHash(password);
-        auto user =userRepository_.CreateNewUserByEmail(email,password_hash,display_name,username);
+        auto user =userRepository_.CreateNewUserByEmail(email,password_hash,display_name,normalized_username);
         if (user)
             //这是一个装user的容器，要把user取出来
             return RegisterResult{*user};
@@ -59,10 +64,31 @@ bool RegisterService::checkEmail(const std::string &email) {
 }
 bool RegisterService::checkDisplayName(const std::string &display_name) {
     backend::logging::Scope operationLog{"RegisterService", "checkDisplayName"};
-    std::regex pattern(DISPLAY_NAME);
-    return std::regex_match(display_name, pattern);
-    return false;
-
+    // 按 Unicode 码点计数，中文和 emoji 不按 UTF-8 字节数计算。
+    // 组合表情可能包含多个码点。NUL 无法存入 PostgreSQL text。
+    if (display_name.empty() || display_name.size() > 200) return false;
+    std::size_t characters = 0;
+    for (std::size_t i = 0; i < display_name.size();) {
+        const auto first = static_cast<unsigned char>(display_name[i]);
+        std::uint32_t codepoint = 0;
+        std::size_t width = 0;
+        if (first < 0x80) { codepoint = first; width = 1; }
+        else if (first >= 0xC2 && first <= 0xDF) { codepoint = first & 0x1F; width = 2; }
+        else if (first >= 0xE0 && first <= 0xEF) { codepoint = first & 0x0F; width = 3; }
+        else if (first >= 0xF0 && first <= 0xF4) { codepoint = first & 0x07; width = 4; }
+        else return false;
+        if (width > display_name.size() - i) return false;
+        for (std::size_t j = 1; j < width; ++j) {
+            const auto next = static_cast<unsigned char>(display_name[i + j]);
+            if ((next & 0xC0) != 0x80) return false;
+            codepoint = (codepoint << 6) | (next & 0x3F);
+        }
+        if (codepoint == 0 || (width == 3 && codepoint < 0x800) || (width == 4 && codepoint < 0x10000) ||
+            (codepoint >= 0xD800 && codepoint <= 0xDFFF) || codepoint > 0x10FFFF) return false;
+        if (++characters > 50) return false;
+        i += width;
+    }
+    return display_name.find_first_not_of(' ') != std::string::npos;
 }
 bool RegisterService::checkPassword(const std::string &password) {
     backend::logging::Scope operationLog{"RegisterService", "checkPassword"};

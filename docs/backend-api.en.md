@@ -123,8 +123,8 @@ No Access Token is required.
 | --- | --- | --- | --- |
 | email | string | Yes | Non-empty; leading/trailing ordinary spaces are removed, then the value is lowercased and checked against the email regex |
 | password | string | Yes | After trimming ordinary spaces, ASCII test inputs must be 6–20 characters and match the password regex: at least one lowercase letter, uppercase letter, digit, and non-alphanumeric non-whitespace character; no whitespace anywhere |
-| display_name | string | Yes | After trimming ordinary spaces, 3–20 characters consisting only of English letters, digits, and underscores |
-| username | string | Yes | After trimming ordinary spaces, 3–30 English letters, digits, underscores or periods; currently not lowercased; database constraints also apply |
+| display_name | string | Yes | After trimming ordinary spaces, 1–50 Unicode code points; Chinese, mixed case, symbols, spaces and emoji allowed; reject all-space values and NUL |
+| username | string | Yes | Trim ordinary spaces and lowercase ASCII letters; 3–30 characters from a-z, 0-9, period, underscore and hyphen; repeated and edge symbols allowed; unique |
 
 Trimming here means removing leading/trailing ASCII spaces, not all Unicode whitespace. Passwords are also currently trimmed; this should be corrected later. For now, do not use passwords with leading/trailing spaces. Non-ASCII password length and character classification must not be interpreted as Unicode character counts; the implementation does not define a complete Unicode password policy.
 
@@ -1895,3 +1895,4 @@ curl -i --max-time 10 https://aittelegramapi.uk/download_file
 These probes omit attachment fields and should return 400 missing_attachment_id. Deployment acceptance also requires an authenticated full download, ciphertext length and digest checks, and client decryption. Test expired tokens, inactive devices, wrong uploaders, expired attachments and interrupted downloads.
 
 This section follows the current source. Linux compilation and real-device end-to-end acceptance remain to be confirmed in the deployment environment.
+Apply database/migrations/005_registration_names.sql before deployment to allow hyphens in usernames. Display names count Unicode code points; a combined emoji can contain multiple code points. Case and symbols are preserved. Usernames exclude spaces and non-ASCII characters. Alice-01 is stored as alice-01 on registration. Existing usernames are preserved. The display-name constraint uses NOT VALID to retain historical values while enforcing the rule on subsequent writes.

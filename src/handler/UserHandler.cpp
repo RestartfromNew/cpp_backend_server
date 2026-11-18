@@ -245,7 +245,7 @@ HttpResponse UserHandler::Register(const HttpRequest &request) {
             return ErrorResponseMaker(
                 HttpStatus::Bad_Request,
                 "invalid_display_name",
-                "Invalid display name"
+                "Display name must contain 1-50 Unicode code points"
             );
 
         case RegisterError::EmailExists:
@@ -265,7 +265,7 @@ HttpResponse UserHandler::Register(const HttpRequest &request) {
             return ErrorResponseMaker(
                 HttpStatus::Bad_Request,
                 "invalid_user_name",
-                "Invalid user name"
+                "Username must contain 3-30 lowercase letters, digits, dots, underscores or hyphens"
             );
     }
     throw std::logic_error("Unhandled RegisterError");

@@ -35,10 +35,10 @@ CHECK (
     length(trim(display_name)) > 0
 )
 ALTER TABLE app.users 
-ADD CONSTRAINT users_check CHECK (username ~ '^[a-z0-9_.]{3,30}$');
+ADD CONSTRAINT users_check CHECK (username ~ '^[a-z0-9_.-]{3,30}$');
 
 ```
-3-30个字符，包括英文，数字，英文点号.,下划线
+3-30 个字符，注册时转小写，包括 a-z、数字、英文点号、下划线和短横线。display_name 为 1-50 个 Unicode 码点，允许中文和表情。配套迁移为 database/migrations/005_registration_names.sql。
 
 ## password_credential
 - 一个未注册用户通过邮箱+密码注册成功之后，表中保存email+password_hash两个记录；注册成功的用户可以通过该方式登录
