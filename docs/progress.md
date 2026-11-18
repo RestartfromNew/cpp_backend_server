@@ -8,7 +8,7 @@
 - 头像独立 avatars 表，status=active/revoked 与 revoked_at；单请求保存/绑定，替换时原子撤销旧头像，维护线程延迟清理。不 E2EE，不进 file_uploads，不走附件 Reactor。
 - 聊天附件通过 WebSocket 申请许可，HTTP 单独上传密文，UploadReactor + 有界队列 + 共用磁盘池写临时文件；校验持久化后 ready。
 - file_uploads 任务独立于原 WebSocket，断线后已授权上传可继续，重连查询状态；完成事件只提示，不代替数据库。
-- packet 是加密附件描述和密钥，完整文件不走 WebSocket；复用 message_envelopes 的推送/补拉/ACK，Bob 另走 HTTP 下载解密。保留 envelope_attachments 设备授权。
+- packet 是加密附件描述和密钥，完整文件不走 WebSocket；复用 message_envelopes 的推送/补拉/ACK，Bob 另走 HTTP 下载解密。下载授权从 message_envelopes 的接收设备和 attachment_ids 判断。
 - 累计用户容量表可后置，保留大小/并发/磁盘上限；头像与附件只共用磁盘设施，不共用上传业务。
 
 入口：[最终方案](file-storage/README.md)、[协议与 iOS 流程](file-storage/attachment-protocol.md)、[新排期](feature-roadmap.md)。本次仅更新 docs/SQL 草案，未迁移或改业务代码。

@@ -139,14 +139,7 @@ CREATE TABLE app.user_avatars (
         REFERENCES app.avatars(id, uploader_id) ON DELETE RESTRICT
 );
 
--- Chat envelopes point ONLY to encrypted attachments, never avatars.
-CREATE TABLE app.envelope_attachments (
-    envelope_id UUID NOT NULL REFERENCES app.message_envelopes(envelope_id) ON DELETE RESTRICT,
-    attachment_id UUID NOT NULL REFERENCES app.attachment(id) ON DELETE RESTRICT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (envelope_id, attachment_id)
-);
-CREATE INDEX envelope_attachment_object_idx ON app.envelope_attachments(attachment_id, envelope_id);
+-- Apply database/migrations/004_message_envelope_attachment_ids.sql to the existing message_envelopes table.
 
 -- file_uploads.client_request_id maps the original WebSocket permit request_id.
 -- Transport does not alter schema: task state survives WebSocket disconnects.

@@ -13,7 +13,7 @@
 | 入口 | 普通 HTTP POST /upload_avatar | WebSocket file.upload.request 申请，HTTP PUT /upload_file 传密文 |
 | 数据内容 | 普通图片，不做 E2EE | iOS 预先加密的文件 |
 | 接收 | 有严格请求体上限的现有 HTTP 路径 | UploadReactor 非阻塞分块接收 |
-| 业务记录 | avatars 最终记录 + user_avatars 当前引用 | attachment + file_uploads + envelope_attachments |
+| 业务记录 | avatars 最终记录 + user_avatars 当前引用 | attachment + file_uploads + message_envelopes.attachment_ids |
 | 上传任务 | 无，不创建 upload_id/token，不轮询进度 | 有，凭据、期限、幂等、重连状态查询；累计容量配额可后置 |
 | 保存结果 | 同一次 HTTP 请求完成并绑定头像，返回结果 | 文件 ready 后，再通过信封发送 |
 | 内容处理 | 校验、缩放、去元数据、重编码 JPEG | 不解密、不解压、不做服务端图片处理 |
@@ -59,7 +59,7 @@ dev 环境设置 `FILE_STORAGE_ROOT=/home/developer/.local/share/cpp-backend-dev
 - attachment：客户端密文文件对象及生命周期。
 - file_uploads：**只引用 attachment**，无 avatar_id/kind；管理附件批准、凭据、额度和完成状态。
 - file_storage_quotas：后置可选，仅统计聊天附件；不启用时 file_uploads.reserved_bytes=0，以并发/大小/临时容量限制先保证资源有界。头像不走这套额度业务。
-- envelope_attachments：只连接附件与实际设备信封。
+- message_envelopes.attachment_ids：记录实际设备信封引用的附件 UUID。
 
 不设置单独 set_avatar 两阶段流程：头像单次请求完成保存和绑定，替换/移除时在同一事务撤销旧头像并记录 revoked_at。当前头像不受聊天附件保留期影响；好友只读取当前且 active 的头像。撤销时间不是物理删除时间，旧头像按撤销宽限期清理。附件仍按设备信封授权，不能把同账号新设备自动授权为历史接收者。
 

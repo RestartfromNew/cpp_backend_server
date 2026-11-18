@@ -40,7 +40,9 @@
 #include "repository/FileRepository.h"
 #include "service/FileService.h"
 #include "file/UploadReactor.h"
+#include "file/DownloadReactor.h"
 #include <atomic>
+#include <memory>
 #include <thread>
 namespace {
 // Block before starting ANY background thread. Main consumes signals as data;
@@ -327,6 +329,12 @@ int main()
         DiskPool disk_pool{4, 16};
         UploadReactor upload_reactor{upload_port, disk_pool, authMiddleWare, file_service,
             [&service_thread_pool](auto task) { service_thread_pool.receiveTask(std::move(task)); }};
+        constexpr int download_port = 8085;
+        DiskOperation disk_operation{file_service};
+        DownloadReactor download_reactor{download_port, disk_pool, authMiddleWare, file_service, disk_operation};
+        // 异常退出时也先等待磁盘回投任务结束，再销毁两个 Reactor。
+        const auto stop_disk = [](DiskPool* pool) { pool->close(); };
+        std::unique_ptr<DiskPool, decltype(stop_disk)> disk_shutdown{&disk_pool, stop_disk};
         if (!thread_pool.init())
             throw std::runtime_error("Thread pool initialization failed");
         if (!web_socket_pool.init())
@@ -341,13 +349,26 @@ int main()
                 upload_failed.store(true);
             }
         });
+        std::atomic<bool> download_failed{false};
+        std::jthread download_thread([&](std::stop_token stop) {
+            std::stop_callback wake_reactor(stop, [&] { download_reactor.close(); });
+            try {
+                download_reactor.run();
+            } catch (const std::exception& error) {
+                std::cerr << "[download] Reactor failed: " << error.what() << '\n';
+                download_failed.store(true);
+            }
+        });
         try {
             service_thread_pool.init();
+            std::cout << "[download] listening on 127.0.0.1:" << download_port << '\n';
             std::cout << "[upload] listening on 127.0.0.1:" << upload_port << '\n';
             std::cout << "[server] ready on port 8081; workers=4; queue_capacity=8; Ctrl+C to stop\n";
             backend::logging::Logger::write(backend::logging::Level::Info, "server", "ready");
-            thread_pool.running([&] { return upload_failed.load() || stopSignals.requested(); });
+            thread_pool.running([&] { return upload_failed.load() || download_failed.load() || stopSignals.requested(); });
         } catch (...) {
+            download_thread.request_stop();
+            download_thread.join();
             upload_thread.request_stop();
             upload_thread.join();
             disk_pool.close();
@@ -358,6 +379,8 @@ int main()
         server.stop();
         std::cout << "[server] listener closed; waiting for workers\n";
         thread_pool.close();
+        download_thread.request_stop();
+        download_thread.join();
         upload_thread.request_stop();
         upload_thread.join();
         disk_pool.close();
@@ -366,7 +389,7 @@ int main()
         web_socket_pool.close();
         std::cout << "[server] all workers joined; closing database pool\n";
         databasePool.close();
-        if (upload_failed.load()) return 1;
+        if (upload_failed.load() || download_failed.load()) return 1;
         backend::logging::Logger::write(backend::logging::Level::Info, "server", "shutdown_complete");
         std::cout << "[server] database pool closed; shutdown complete\n";
 

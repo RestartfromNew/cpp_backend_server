@@ -1845,8 +1845,8 @@ curl -i --max-time 5 https://aittelegramapi.uk/upload_file
 1. **生成密文文件。** 客户端使用附件协议的文件密钥和认证加密，将图片或文件写成可重读的本地密文文件。用密文长度填写 `size_bytes`，可选的 `sha256_hex` 也对同一份密文计算。保留密文和此次申请的 `request_id`，供后续查询或重试。
 2. **申请许可。** 在当前活跃设备的 WebSocket 发送 `file.upload.request`，按 `request_id` 匹配结果。首次成功后保存 `upload_id`、`attachment_id`、`upload_token` 和 `expires_at`。上传凭据只用于这笔上传，避免写入日志。
 3. **上传密文。** 将 `upload_url` 相对 HTTPS 基址解析为 URL。可用 `URLSession.uploadTask(with:fromFile:)` 直接上传本地密文文件。设置 `PUT` 和第 26.3 节的请求头，正文长度以密文文件为准。上传进度只表示客户端发送进度。
-4. **确认后端发布。** 收到 HTTP `200` 后，检查 `code == "upload_completed"`、`upload_state == "completed"` 和 `attachment_state == "ready"`，再核对响应里的两个 UUID 和字节数与本次上传一致。当前 Reactor 在写完正文后等上游 EOF 或约 30 秒空闲期，再开始最终校验。Nginx 上游保持打开时，即使客户端已发完也可能有这段等待。
-5. **发送消息信封。** 将 `attachment_id`、原始文件名、文件类型、文件密钥和解密参数放入消息明文，使用现有设备会话对每个目标设备分别做认证加密，得到各自的 `packet_base64`。文件密文只需上传一次。对每个设备沿用 `chat.newTextMessage`，外层携带 `attachment_ids`。
+4. **确认后端发布。** 收到 HTTP `200` 后，检查 `code == "upload_completed"`、`upload_state == "completed"` 和 `attachment_state == "ready"`，再核对响应里的两个 UUID 和字节数与本次上传一致。Reactor 收齐 Content-Length 声明的字节并确认最后一块写入成功后，立即开始最终校验。约 30 秒空闲超时只适用于正文尚未收齐的连接。
+5. **发送消息信封。** 将 `attachment_id`、原始文件名、文件类型、文件密钥和解密参数放入消息明文，使用现有设备会话对每个目标设备分别做认证加密，得到各自的 `packet_base64`。文件密文只需上传一次。对每个设备沿用 `chat.newTextMessage`，附件信息统一放在加密 packet 正文中。
 
 ```json
 {
@@ -1857,15 +1857,167 @@ curl -i --max-time 5 https://aittelegramapi.uk/upload_file
   "recipient_device_id": "<recipient_device_uuid>",
   "protocol_version": "<existing_envelope_protocol_version>",
   "packet_base64": "<recipient-specific encrypted envelope>",
-  "attachment_ids": ["09ecaabc-31b3-4167-b65c-d3747e268200"]
+  "attachment_ids": []
 }
 ```
 
-同一逻辑消息使用稳定的 `message_id`。向同一目标设备重试时保留该设备原来的密文包、协议版本和附件 ID 集合。外层列表最多 16 个不同的非零 UUID。服务端只接受由当前发送设备上传且仍有效的 `ready` 附件。首次绑定信封后保留 7 天，后续引用不会延长。尚未绑定信封的 `ready` 附件有 1 天的引用期限。
+同一逻辑消息使用稳定的 message_id，向同一目标设备重试时保留原密文包和协议版本。附件描述全部加密进 packet，外层 attachment_ids 省略或使用空数组。服务端按设备和好友关系验证信封投递，只存取加密 packet。当前发送信封不会改变附件保留期。上传完成设置 unreferenced_expires_at 为完成后 1 天；下载检查该期限和已有 expires_at，任一期限到达即拒绝读取。上传许可 expires_at 是上传截止时间，与下载有效期分别处理。
 
 ### 26.6 iOS 接收附件与失败恢复
 
-- 在线接收从 `Online_Sync.envelope` 取信封，断线后使用 `chat.sync.envelope`。两种路径都返回 `packet_base64` 和 `attachment_ids`，普通消息的附件列表为空。信封可靠保存后可继续使用现有 ACK。
-- 接收端先使用本机设备会话对 `packet_base64` 做认证解密，然后核对明文里的附件 ID 和外层列表。通过检查后，可用原始文件名显示附件占位。**下载 Reactor 和下载 API 尚待接入**。接入后，客户端再申请下载密文，并用信封中解出的文件密钥在本地做认证解密。
+- 在线接收从 `Online_Sync.envelope` 取信封，断线后使用 `chat.sync.envelope`。两种路径返回 `packet_base64`，客户端解密后取得附件信息。兼容字段 `attachment_ids` 统一为空数组。信封可靠保存后可继续使用现有 ACK。
+- 接收端认证解密 packet_base64，从明文取得附件描述，再按第 26.7 节下载密文。可靠保存信封后可以 ACK，文件下载独立进行。断线补拉和在线接收使用同一套附件处理代码。
 - 上传响应丢失或超时后，使用原 `request_id`、`size_bytes` 和原摘要重新发送 `file.upload.request`。如果返回原任务 `completed`，可用原 `attachment_id` 继续发送信封。如果仍是 `receiving`，等待后再查询，避免并发重发 PUT。任务失败或许可失效后，使用新的 `request_id` 重新申请。对于仍为 `authorized` 的任务，若原 token 丢失，当前没有续签接口可恢复原 token，可用新请求 ID 重新申请。
-- 部署前执行 `003_envelope_attachments.sql`，并确认后端运行角色具有表的 `SELECT` 和 `INSERT` 权限。普通消息同步也会使用这张表。
+- 当前信封仅保存加密 packet；附件描述由客户端解密取得。外层 attachment_ids 为兼容空数组。
+
+### 26.7 下载附件密文与 iOS 接入
+
+#### 26.7.1 地址与请求
+
+生产环境使用 GET https://aittelegramapi.uk/download_file。后端下载 Reactor 监听 127.0.0.1:8085，由 Nginx 转发。手机使用可达的 API 域名；手机上的 localhost 指向手机本身。
+
+请求没有正文，每次下载一个完整密文文件。成功状态为 HTTP 200。
+
+| 请求头 | 必填 | 来源与含义 |
+|---|---|---|
+| Authorization | 是 | Bearer 加当前 access_token |
+| deviceID | 是 | 当前登录、下载所用的活跃设备 UUID |
+| X-Attachment-ID | 是 | 认证解密信封后取得的附件 UUID |
+| X-Uploader-ID | 是 | 原始上传者的用户 UUID，从可信的解密描述或发送者信息取得，与数据库 uploader_id 一致 |
+| Accept | 否 | 可填写 application/octet-stream |
+
+三个 UUID 都必须有效且非全零。兼容旧 attachment_id / uploader_id 请求头，经过代理时推荐 X- 前缀，只发送一套头名。
+
+~~~http
+GET /download_file HTTP/1.1
+Host: aittelegramapi.uk
+Authorization: Bearer <access_token>
+deviceID: <current_device_uuid>
+X-Attachment-ID: <attachment_uuid>
+X-Uploader-ID: <uploader_user_uuid>
+Accept: application/octet-stream
+
+~~~
+
+deviceID 标识当前下载设备，X-Uploader-ID 标识附件原始上传者。客户端自行管理文件密钥、nonce、原始文件名及本机保存路径。
+
+#### 26.7.2 信封与附件描述
+
+在线收到 Online_Sync.envelope 或离线取得 chat.sync.envelope 后，先认证解密 packet_base64。附件描述的字段名由客户端加密消息协议约定，服务器按不透明 packet 保存。
+
+附件描述需能提供附件 ID、上传者用户 ID、密文长度、文件密钥、加密方案与参数、原始文件名和媒体类型。建议携带密文 SHA-256，以便核对发送与下载的密文。编码和文件加密格式沿用现有客户端协议。
+
+外层 attachment_ids 是兼容字段，响应统一为空数组。客户端从认证解密的正文取得附件信息。用逻辑消息 ID 和附件 ID 关联记录，防止在线推送和离线补拉触发重复下载。
+
+#### 26.7.3 服务端检查与权限边界
+
+服务器验证 access_token，然后在 DiskPool 任务中查库，确认账号有效、deviceID 属于认证用户且 active。附件 ID 和上传者 ID 必须匹配，附件必须 ready，且未删除、未超过 expires_at 或 unreferenced_expires_at。
+
+接收关系保存在加密 packet 内。有效账号的活跃设备持有正确附件 ID 和上传者 ID 即可下载密文，内容的可读性由文件密钥和认证解密保证。下载开始时检查设备状态，当前已开始的下载没有逐块设备撤销复查。
+
+打开文件后 fstat 核对文件类型和磁盘大小。成功响应 Content-Length 取自数据库 size_bytes。
+
+#### 26.7.4 iOS 下载步骤
+
+1. 认证解密信封、校验附件描述，可靠持久化后按现有规则 ACK。附件状态设为待下载，消息 ACK 与文件下载完成分别记录。
+2. 使用当前 token、当前 deviceID 和两个附件相关 ID 构造无正文 GET。采用落盘下载，例如 URLSession 下载任务，将密文写入应用管理的临时位置，控制大文件内存占用。
+3. 收到响应先判断 HTTP 状态，HTTP 200 才进入文件处理。错误通常为 JSON，代理也可能返回 HTML，解析失败时仍按 HTTP 状态处理。
+4. 以已接收字节数和 Content-Length 显示传输进度。网络任务成功结束并通过核验后，再标记下载完成。
+5. 比较临时文件实际长度、响应 Content-Length 和信封描述中的密文长度。描述包含 SHA-256 时，对原始密文字节计算摘要并比较。传输中断、短文件或摘要不一致时清理临时结果，重新完整下载。
+6. 使用信封取得的文件密钥和参数认证解密。只有认证通过后，才将明文发布到正式缓存、缩略图或预览。失败时丢弃不可用输出并显示失败状态。
+7. 以 attachment_id 关联本地缓存，以解密后的原始文件名显示。原始文件名需规范化后用于本机保存，实际磁盘命名可采用本机生成的 ID。
+8. 下载内部块大小由服务器管理。iOS 发起一次请求，HTTP 客户端负责持续接收，无需逐个请求服务器内部的 8192 字节块。
+
+同一附件可合并并发下载任务，页面再次展示时查询已验证的本地缓存。当前没有 Range、206、ETag 或断点续传协议，重试从头 GET。
+
+#### 26.7.5 响应、错误和重试
+
+~~~http
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: application/octet-stream
+Content-Length: 42294
+
+<42294 bytes of ciphertext>
+~~~
+
+成功正文为原始密文，没有 JSON 包装和原始文件名。成功响应头发出后若读盘失败或连接中断，服务端关闭连接；客户端需要识别传输错误或未达到 Content-Length 的短文件。
+
+下载前的错误响应示例：
+
+~~~json
+{"error":{"code":"download_permission_denied"}}
+~~~
+
+| HTTP | error.code | 客户端处理 |
+|---|---|---|
+| 400 | missing_attachment_id / invalid_attachment_id | 检查附件描述和请求字段 |
+| 400 | missing_uploader_id / invalid_uploader_id | 检查原始上传者 UUID |
+| 400 | missing_device_id / invalid_device_id | 检查当前设备 UUID |
+| 400 | unexpected_download_body | 使用无正文 GET |
+| 401 | access_token_expired / invalid_access_token | 按现有刷新流程取得新凭据，有限重试；刷新失败进入重新登录 |
+| 403 | download_permission_denied | 账号无效、设备不属于用户或非 active，停止自动重试并同步设备状态 |
+| 404 | file_not_found | 附件不存在或附件与上传者 ID 不匹配 |
+| 404 | route_not_found | 检查路径和代理 |
+| 405 | download_method_not_allowed | 使用 GET，响应带 Allow: GET |
+| 409 | file_not_ready | 尚未 ready 或已失败，核对上传结果，避免无限重试 |
+| 410 | file_expired / file_deleted | 标记附件不可用，保留聊天记录 |
+| 500 | download_open_failed | 查询、文件打开或大小检查失败，有限退避重试 |
+| 503 | download_disk_busy | 队列暂时繁忙，有限退避重试 |
+
+请求头解析失败还可能返回共享 HTTP 解析器的错误码。附件和上传者字段先于 token 检查，设备字段在 token 通过后检查。测试 401 时先提供格式正确的附件和上传者 ID。数据库记录存在但磁盘文件缺失，当前返回 500 download_open_failed。
+
+重试保留附件描述，使用最新 token 重新构造请求。403、404、409、410 按具体原因处理。认证解密失败需核对密钥和加密协议。信封发送不会自动延长附件下载期限。
+
+#### 26.7.6 Windows PowerShell 联调
+
+将占位值替换为真实凭据和附件信息。下面下载结果仍是密文。
+
+~~~powershell
+$baseUrl = "https://aittelegramapi.uk"
+$accessToken = "<access_token>"
+$deviceId = "<current_device_uuid>"
+$attachmentId = "<attachment_uuid>"
+$uploaderId = "<uploader_user_uuid>"
+$outputPath = Join-Path $env:TEMP "$attachmentId.bin"
+
+curl.exe --silent --show-error --fail --connect-timeout 5 --max-time 120 --header "Authorization: Bearer $accessToken" --header "deviceID: $deviceId" --header "X-Attachment-ID: $attachmentId" --header "X-Uploader-ID: $uploaderId" --output "$outputPath" "$baseUrl/download_file"
+
+if ($LASTEXITCODE -eq 0) {
+    Get-Item -LiteralPath $outputPath | Select-Object FullName, Length
+    Get-FileHash -LiteralPath $outputPath -Algorithm SHA256
+} else {
+    Write-Warning "Download failed; discard any partial output before retrying."
+    Remove-Item -LiteralPath $outputPath -ErrorAction SilentlyContinue
+}
+~~~
+
+Length 和 SHA256 应与发送时的密文一致。curl 成功后，仍需客户端执行认证解密。
+
+#### 26.7.7 代理与部署核对
+
+在现有 HTTPS server 块内添加：
+
+~~~nginx
+location = /download_file {
+    proxy_pass http://127.0.0.1:8085;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 60s;
+    send_timeout 60s;
+    proxy_set_header Host $host;
+    proxy_set_header Connection close;
+}
+~~~
+
+~~~bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo ss -ltnp 'sport = :8085'
+curl --noproxy '*' -i --max-time 10 http://127.0.0.1:8085/download_file
+curl -i --max-time 10 https://aittelegramapi.uk/download_file
+~~~
+
+两条探测缺少附件参数，应返回 400 missing_attachment_id。部署验收还需验证有凭据的完整下载、密文长度、摘要和客户端解密，并测试过期 token、非活跃设备、错误上传者、附件过期和下载中断。
+
+本节依据当前源码整理。Linux 编译及真实设备端到端验收尚待部署环境确认。

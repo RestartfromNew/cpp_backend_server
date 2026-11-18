@@ -15,8 +15,7 @@ erDiagram
     user_devices ||--o{ attachment : uploads_from
     users ||--o| file_storage_quotas : optional_later_quota
     attachment ||--o| file_uploads : upload_task
-    attachment ||--o{ envelope_attachments : referenced_by
-    message_envelopes ||--o{ envelope_attachments : carries
+    attachment }o..o{ message_envelopes : referenced_by_attachment_ids
 ```
 
 两类业务仅共用磁盘 I/O 执行器和 FileStorage。头像没有上传批准、任务查询、上传 token、credential_version 或额度预留。
@@ -113,14 +112,11 @@ authorized→receiving 用条件更新认领；实时接收字节放 Reactor Ses
 
 后续启用此功能时，附件申请短事务原子预留并确保 used+reserved<=quota；成功时减 reservation、增最终 size，attachment ready、file_uploads completed 同事务提交。失败在清理残留后才释放预算。数据库预留不等于文件系统实际预分配，仍需低水位和 ENOSPC 处理。
 
-## 7. app.envelope_attachments：附件消息引用与设备授权
+## 7. app.message_envelopes.attachment_ids
 
-| 字段 | 含义 |
-|---|---|
-| envelope_id / attachment_id | 联合主键，FK 到实际信封与 attachment |
-| created_at | 绑定时间 |
+`attachment_ids` 为 `UUID[] NOT NULL DEFAULT '{}'`，每条信封最多保存 16 个不同的附件 UUID。普通消息使用空数组。信封的 `recipient_device_id` 表明接收设备。一个密文可被投递给多个设备，每条设备信封各自保存引用。
 
-不引用 avatars，不加旧 app.message 外键。接收者从信封 JOIN 取得。新发送校验附件归属、ready/有效期，并在保存信封的同一事务插入关联；一个密文可供多设备复用。
+UUID 数组没有逐元素外键。发送事务按顺序锁定 `app.attachment` 行，校验归属、ready 和有效期，再写入信封并更新附件保留期。下载和清理查询可用 `cardinality(attachment_ids) > 0 AND attachment_ids @> ARRAY[$1::uuid]` 命中部分 GIN 索引。
 
 下载要求当前设备 active 且为信封 recipient，上传者读取另行授权；同账号新设备不自动继承历史授权。删除好友不撤回已投递附件，期限仍有效。
 

@@ -6,6 +6,8 @@
 #define CPP_BACKEND_SERVER_FILEREPOSITORY_H
 
 #include "databases/DatabasePool.h"
+#include "domain/FileError.h"
+#include "domain/FileStorageInfo.h"
 #include "domain/UploadPermission.h"
 
 class FileRepository {
@@ -21,6 +23,8 @@ public:
         const boost::uuids::uuid& upload_id, const std::string& token_hash_hex, std::uint64_t content_length);
     bool finishUpload(const boost::uuids::uuid& upload_id, std::uint64_t size, const std::string& digest);
     void failUpload(const boost::uuids::uuid& upload_id, const std::string& code);
+
+    [[nodiscard]] std::variant<FileError, FileStorageInfo> getFileStorageKey(const boost::uuids::uuid& attachment_id, const boost::uuids::uuid& uploader_id, const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id);
 
 private:
     DatabasePool& pool_;

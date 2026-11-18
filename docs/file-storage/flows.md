@@ -115,12 +115,12 @@ PUT /upload_file 带正常身份、X-Upload-ID、X-Upload-Token、Content-Length
 2. 事务外同步文件，以同文件系统、不覆盖的发布方式写入最终 key。若目标存在需核对同一对象元数据，不盲目覆盖；仅 write 返回不等于掉电持久，目录同步按持久性承诺处理。
 3. 清理临时残留，短事务确认资格、将 attachment ready、file_uploads completed 一起提交；启用 quota 时同事务结算 reserved→used，失败残留未清理前不释放预算。未启用时 reserved_bytes=0，不操作 quota 表。
 4. iOS 将 attachment_id、原文件名/类型、文件密钥/认证参数放入设备加密正文；多设备分别加密描述，文件密文上传一次。
-5. 发送外层增加 attachment_ids（默认 []、有个数上限），在现有 saveNewMessage 同事务校验附件 owner/ready/期限并保存 envelope_attachments；第一次绑定设置保留期，后续不延长。
+5. 发送外层增加 attachment_ids（默认 []、有个数上限），在现有 saveNewMessage 同事务校验附件 owner/ready/期限并将附件 ID 数组写入 message_envelopes；第一次绑定设置保留期，后续不延长。
 6. 幂等同时比较 packet/protocol 和排序后的 attachment_ids；相同返回原信封，不追加授权，不同冲突。过期后的原请求重试也可返回原存储结果。
 7. 在线推送/离线拉取同步返回关联 ID，接收端解密后核对；服务器不能证明密文描述与外层一致，外层关系会泄露部分元数据。
 8. 附件下载仍用请求授权与流式下载：当前 active 设备是信封 recipient，或符合上传者访问规则。仅同账号不自动授权历史，新好友状态变化不撤回已投递引用，到期拒绝。
 
-头像不参与上述步骤，也不能出现在 envelope_attachments。头像读取在第 3 节。
+头像读取流程见第 3 节。
 
 ### iOS 消息展示与文件下载
 
@@ -155,6 +155,6 @@ PUT /upload_file 带正常身份、X-Upload-ID、X-Upload-Token、Content-Length
 | ready 附件未引用/到期 | 对象行锁与绑定协调，先标 deleting，再删文件、结算 |
 | 删除文件成功、DB 未结算 | 重试确认文件不存在，再条件结算，防止重复减账 |
 
-附件清理锁 attachment 后检查 envelope_attachments；到期可保留信封引用并显示文件过期。未引用文件清理不能误删刚绑定对象。所有磁盘恢复操作限制在受控根目录，不能用启动时删除整个 staging 替代恢复。
+附件清理锁 attachment 后检查 message_envelopes.attachment_ids；到期可保留信封引用并显示文件过期。未引用文件清理不能误删刚绑定对象。所有磁盘恢复操作限制在受控根目录，不能用启动时删除整个 staging 替代恢复。
 
 必验：普通头像一次请求完成且无 file_uploads 行；非法图片/超大像素/输出超限；并发替换；HTTP 超时后的任务收尾；磁盘队列公平；头像 DB 回滚不丢旧头像；附件申请幂等、部分写入、慢连接、fd 复用、取消/撤销、越权下载、过期和各崩溃窗口。还需验证 WebSocket 响应关联、会话代次、许可幂等、断线后继续上传、renew/认领竞争、ready 通知丢失恢复，以及消息已 ACK 但附件未下载。真实 SQL/性能/图片库测试尚未执行。

@@ -109,12 +109,16 @@ add_executable(cpp_backend_server src/main.cpp
         include/domain/UploadSession.h
         src/file/DiskOperation.cpp
         include/file/DiskOperation.h
+        src/http/HttpRequestHeadParser.cpp
         src/file/UploadHttpParser.cpp
         include/file/UploadHttpParser.h
         src/service/FileService.cpp
         include/service/FileService.h
         src/repository/FileRepository.cpp
         include/repository/FileRepository.h
+        include/domain/DownloadSession.h
+        src/file/DownloadReactor.cpp
+        include/file/DownloadReactor.h
 )
 target_include_directories(
         cpp_backend_server
@@ -263,7 +267,7 @@ target_link_libraries(login_ticket_isolated_test PRIVATE Threads::Threads)
 add_test(NAME login_ticket_isolated COMMAND login_ticket_isolated_test)
 set_tests_properties(login_ticket_isolated PROPERTIES TIMEOUT 20)
 
-add_executable(upload_http_headers_test tests/upload_http_headers_test.cpp src/file/UploadHttpParser.cpp)
+add_executable(upload_http_headers_test tests/upload_http_headers_test.cpp src/file/UploadHttpParser.cpp src/http/HttpRequestHeadParser.cpp)
 target_include_directories(upload_http_headers_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_test(NAME upload_http_headers COMMAND upload_http_headers_test)
 set_tests_properties(upload_http_headers PROPERTIES TIMEOUT 10)
@@ -274,6 +278,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/common/UniqueFd.cpp
         src/file/DiskOperation.cpp
         src/file/DiskPool.cpp
+        src/http/HttpRequestHeadParser.cpp
         src/file/UploadHttpParser.cpp
         src/file/UploadReactor.cpp
         src/http/AuthMiddleWare.cpp

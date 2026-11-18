@@ -19,7 +19,7 @@ WebSocket file.upload.request 申请许可
     ↓
 Alice 为各目标设备构造加密附件描述，通过 chat.newTextMessage 提交
     ↓
-保存 message_envelopes + envelope_attachments，同事务提交
+保存 message_envelopes（含 attachment_ids），同事务更新附件保留期
     ↓
 Bob 在线 WebSocket 收到，或离线后通过现有同步取得同一信封
     ↓
@@ -139,7 +139,7 @@ server 保存的是信封和外层附件关联，不是明文上述 JSON；附�
 
 ## 7. Bob 下载与状态分离
 
-Bob 收到信封后先用本机设备会话认证解密。只有解密成功且明文中的附件 ID 与外层 `attachment_ids` 匹配时，客户端才开始下载。信封可先保存并显示占位。后续 HTTP 下载授权会检查 active 设备和 `envelope_attachments` 中的接收授权。
+Bob 收到信封后先用本机设备会话认证解密。只有解密成功且明文中的附件 ID 与外层 `attachment_ids` 匹配时，客户端才开始下载。信封可先保存并显示占位。后续 HTTP 下载授权会检查 active 设备和 `message_envelopes` 中的接收设备及附件 ID。
 
 建议 POST /request_file_download 提交 attachment_id 与当前设备身份材料，返回自有 HTTP 下载地址和短期授权，实际下载入口再次校验。原始文件字节不走 WebSocket，使用有界 HTTP 流式读取。当前版本不做 Range 或字节断点续传。
 
@@ -149,7 +149,7 @@ Bob 收到信封后先用本机设备会话认证解密。只有解密成功且�
 
 - 当前先做 Linux 本地磁盘，不以云对象存储和 Apple 会员为前置。
 - 头像独立 HTTP、独立表、active/revoked 与 revoked_at，维护线程延迟清理。
-- 聊天附件保留 file_uploads 与 envelope_attachments；后者承担引用和设备下载授权，不能在无替代权限机制时删掉。
+- 聊天附件使用 file_uploads 记录上传任务，由 message_envelopes.attachment_ids 保存引用，并以信封的接收设备作为下载授权依据。
 - 用户累计空间统计可以后置；不启用时 reservation 为 0，但单文件、每用户未完成任务、全局连接/缓冲/磁盘限制与清理不能省略。
 - APNs 后置；未来显示通用系统提醒，消息和文件仍按上述机制恢复。
 - 本协议没有实现或联调；开发需同步 Dispatcher、Service、Repository、迁移、iOS 任务状态和回归测试。

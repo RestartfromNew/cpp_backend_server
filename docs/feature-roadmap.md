@@ -36,7 +36,7 @@ file.upload.request 经当前认证的 WebSocket 申请，request_id 持久化�
 
 ## P3：消息、文件和 iOS
 
-文件密文保存磁盘；packet 只存加密的附件描述、文件密钥、参数和时间。外层 attachment_ids 与 message_envelopes 同事务关联 envelope_attachments；不因参数重试额外授权。
+文件密文保存磁盘；packet 只存加密的附件描述、文件密钥、参数和时间。外层 attachment_ids 与信封一起写入 message_envelopes；不因参数重试额外授权。
 
 在线推送/离线补拉均走现有信封链路，Bob 解密后另经 HTTP 下载，再本地认证解密。ACK 表示信封已保存，不等待图片下载。时间展示用逻辑消息 sent_at，不以附件上传时间排序；设备对 seq 不当作整个聊天序号。
 
@@ -44,7 +44,7 @@ file.upload.request 经当前认证的 WebSocket 申请，request_id 持久化�
 
 ## 后置范围
 
-- file_storage_quotas：保留独立 SQL 草案，本阶段可不建；单文件、活动任务和全局磁盘限制仍必须执行。envelope_attachments 是现有设备授权方案的一部分，不能在无替代授权时跳过。
+- file_storage_quotas：保留独立 SQL 草案，本阶段可不建；单文件、活动任务和全局磁盘限制仍必须执行。下载授权使用 message_envelopes 的 recipient_device_id 和 attachment_ids。
 - APNs：考虑会员费用暂缓，后续基于信封提交与持久化通知任务接入。第一版通用提醒、点击后同步，不传聊天明文和文件密钥。原排期的 4–7 天仅为早期粗估。
 - 对象存储直传和多机：先封装 FileStorage，用 Linux 磁盘验证；未来存储实现可以替换，不提前承诺仅改配置即可多机运行。
 - 大文件断点续传：需要上传协议、加密格式、状态检查点、期限和鉴权联合设计。

@@ -1719,8 +1719,8 @@ A `405 upload_method_not_allowed` response from both GET probes confirms that th
 1. **Create a ciphertext file.** Use the file key and authenticated encryption defined by the attachment protocol. Save the ciphertext to a local file that can be read again. Set `size_bytes` to the ciphertext length and, if supplied, calculate `sha256_hex` over the same bytes. Keep the file and `request_id` for retries.
 2. **Request a permit.** Send `file.upload.request` from the active device's WebSocket and correlate the result by `request_id`. Save the initial `upload_id`, `attachment_id`, `upload_token`, and `expires_at`. Keep the upload credential out of logs.
 3. **Upload the ciphertext.** Resolve `upload_url` against the HTTPS API base URL. Use a file-backed request such as `URLSession.uploadTask(with:fromFile:)` with `PUT` and the headers in Section 26.3. The local ciphertext file determines the body length. Client upload progress measures transmission progress.
-4. **Confirm publication.** After HTTP `200`, check `code == "upload_completed"`, `upload_state == "completed"`, and `attachment_state == "ready"`. Match both UUIDs and the byte count to the upload. The current Reactor waits for upstream EOF or about 30 seconds of idle time after writing the body before finalizing. Nginx can keep the upstream connection open during that wait.
-5. **Send the message envelope.** Put the attachment ID, original filename, file type, file key, and decryption parameters in the message plaintext. Use the existing per-device session to authenticate and encrypt a separate `packet_base64` for each target device. Upload the file ciphertext once. Use the existing `chat.newTextMessage` route with outer `attachment_ids` for each target.
+4. **Confirm publication.** After HTTP `200`, check `code == "upload_completed"`, `upload_state == "completed"`, and `attachment_state == "ready"`. Match both UUIDs and the byte count to the upload. The Reactor starts final verification as soon as all Content-Length bytes have been received and written successfully. The approximately 30-second idle timeout applies only while the request body is incomplete.
+5. **Send the message envelope.** Put the attachment ID, original filename, file type, file key, and decryption parameters in the message plaintext. Use the existing per-device session to authenticate and encrypt a separate `packet_base64` for each target device. Upload the file ciphertext once. Use the existing `chat.newTextMessage` route with attachment metadata inside the encrypted packet for each target.
 
 ```json
 {
@@ -1731,15 +1731,167 @@ A `405 upload_method_not_allowed` response from both GET probes confirms that th
   "recipient_device_id": "<recipient_device_uuid>",
   "protocol_version": "<existing_envelope_protocol_version>",
   "packet_base64": "<recipient-specific encrypted envelope>",
-  "attachment_ids": ["09ecaabc-31b3-4167-b65c-d3747e268200"]
+  "attachment_ids": []
 }
 ```
 
-Use one stable `message_id` per logical message. When retrying to the same device, reuse that device's original encrypted packet, protocol version, and attachment ID set. The outer list permits up to 16 unique non-nil UUIDs. Each attachment must be ready, within its retention window, and uploaded by the sending device. An unreferenced ready attachment has a one-day reference window. Its first envelope starts a seven-day retention period. Further references leave that deadline intact.
+Use one stable message_id per logical message. Reuse the original encrypted packet and protocol version when retrying to the same device. Encrypt the attachment description inside the packet; omit the outer attachment_ids or send an empty array. Envelope delivery validates devices and friendship and stores the opaque packet. Sending an envelope currently leaves attachment retention dates unchanged. Upload completion sets unreferenced_expires_at to one day after completion. Downloads check both that date and any expires_at value. Upload permit expiry is a separate deadline.
 
 ### 26.6 Receiving attachments and recovering from failures
 
-- Read online envelopes from `Online_Sync.envelope`. Use `chat.sync.envelope` to catch up after reconnecting. Both paths return `packet_base64` and `attachment_ids`. Ordinary messages carry an empty attachment list. Use the existing ACK after the envelope has been stored reliably.
-- Authenticate and decrypt `packet_base64` with the receiving device's session, then compare the decrypted attachment IDs with the outer list. After the check passes, use the decrypted name to display a placeholder. **The download Reactor and API are pending**. When available, request the ciphertext and authenticate and decrypt it locally using the file key from the envelope.
+- Read online envelopes from `Online_Sync.envelope`. Use `chat.sync.envelope` to catch up after reconnecting. Both paths return `packet_base64`. Clients decrypt the attachment metadata. The compatibility `attachment_ids` field is always an empty array. Use the existing ACK after the envelope has been stored reliably.
+- Authenticate and decrypt packet_base64, obtain the attachment description, and download ciphertext as described in Section 26.7. ACK after reliable envelope persistence; track attachment download separately. Use the same attachment processing for online delivery and offline synchronization.
 - If the upload response is lost or times out, resend `file.upload.request` with the original request ID, size, and optional digest. An existing `completed` task lets the client proceed with its original attachment ID. If it is still `receiving`, wait and query again before attempting another upload. Use a new request ID after failure or expiry. If the original token was lost while the task is still `authorized`, request a new permit with a new request ID because renewal is pending.
-- Apply `003_envelope_attachments.sql` before deployment and grant the backend role `SELECT` and `INSERT` on the table. Ordinary message synchronization also queries it.
+- Envelopes store the encrypted packet. Attachment metadata is decrypted by clients. The outer attachment_ids field is retained as an empty compatibility array.
+
+### 26.7 Download attachment ciphertext from iOS
+
+#### 26.7.1 Endpoint and request
+
+Use GET https://aittelegramapi.uk/download_file in production. The download Reactor listens on 127.0.0.1:8085 behind Nginx. Mobile clients use the reachable API domain; localhost on a phone refers to the phone.
+
+Each request downloads one complete ciphertext file and has no body. Success is HTTP 200.
+
+| Header | Required | Meaning |
+|---|---|---|
+| Authorization | Yes | Bearer followed by the current access_token |
+| deviceID | Yes | Current active device UUID used by the authenticated user |
+| X-Attachment-ID | Yes | Attachment UUID obtained from the authenticated, decrypted envelope |
+| X-Uploader-ID | Yes | Original uploader user UUID from authenticated metadata or sender information; matches stored uploader_id |
+| Accept | No | application/octet-stream |
+
+All UUIDs must be valid and non-nil. Legacy attachment_id / uploader_id headers are accepted, but prefer the X- headers through proxies. Send one naming convention.
+
+~~~http
+GET /download_file HTTP/1.1
+Host: aittelegramapi.uk
+Authorization: Bearer <access_token>
+deviceID: <current_device_uuid>
+X-Attachment-ID: <attachment_uuid>
+X-Uploader-ID: <uploader_user_uuid>
+Accept: application/octet-stream
+
+~~~
+
+deviceID identifies the downloading device. X-Uploader-ID identifies the original uploader. File keys, nonces, original filenames and local storage paths are managed by the client.
+
+#### 26.7.2 Envelope metadata
+
+For Online_Sync.envelope or chat.sync.envelope, authenticate and decrypt packet_base64 first. The attachment description is part of the client encrypted-message protocol; the server stores the opaque packet.
+
+The description must supply the attachment ID, uploader user ID, ciphertext length, file key, encryption format and parameters, original filename and media type. Include ciphertext SHA-256 when available to compare against the uploaded ciphertext. Follow the existing client encryption and encoding format.
+
+The outer attachment_ids field is retained for compatibility and is always empty in responses. Obtain attachment metadata from the authenticated decrypted packet. Associate logical message and attachment IDs locally to avoid duplicate downloads from online delivery and offline sync.
+
+#### 26.7.3 Server validation and access
+
+The server validates the access token, then checks the database in a DiskPool task. The account must be active, and deviceID must belong to that account and be active. Attachment and uploader IDs must match. The attachment must be ready, undeleted, and within both expires_at and unreferenced_expires_at deadlines when set.
+
+Recipient relationships are inside the encrypted packet. An active device of an active authenticated account holding the correct attachment and uploader IDs can download the ciphertext. The file key and authenticated decryption determine content readability. Device status is checked when starting the download; an already started download does not recheck revocation per block.
+
+After opening the file, fstat checks that it is a regular file with the stored size_bytes. Content-Length uses that database size.
+
+#### 26.7.4 iOS workflow
+
+1. Authenticate and decrypt the envelope and validate the attachment description. Persist it reliably, then ACK through the existing mechanism. Track message persistence and attachment download completion separately.
+2. Construct a bodyless GET with current credentials, deviceID and both attachment identifiers. Use a file-backed download, such as a URLSession download task, to an app-managed temporary location to bound memory consumption.
+3. Check HTTP status before processing the file. Only HTTP 200 enters the success path. Errors normally contain JSON, but proxies can return HTML; handle the status even when error decoding fails.
+4. Show progress using received bytes and Content-Length. Mark completion only after the network task succeeds and validation finishes.
+5. Compare temporary-file size, response Content-Length and the encrypted description's ciphertext size. If supplied, compare SHA-256 over the downloaded ciphertext. Discard incomplete or mismatching output and retry the complete download.
+6. Authenticate and decrypt using the file key and parameters from the envelope. Publish plaintext to the cache, thumbnail generator or preview only after authentication succeeds. Discard unusable output on failure.
+7. Associate cache entries with attachment_id. Display the decrypted original filename, normalize it before local filesystem use, and use app-generated IDs for physical filenames when appropriate.
+8. The client makes one request. HTTP handles continuous reception; clients do not request individual internal 8192-byte server blocks.
+
+Coalesce concurrent requests for the same attachment and reuse verified cached files. Range, 206 responses, ETag and resumable download are not implemented. Retries start a new full GET.
+
+#### 26.7.5 Responses and recovery
+
+~~~http
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: application/octet-stream
+Content-Length: 42294
+
+<42294 bytes of ciphertext>
+~~~
+
+The success body is raw ciphertext. It has no JSON wrapper or original filename. A read failure after headers have started closes the connection; detect the transport error or a file shorter than Content-Length.
+
+An error before the success response uses this shape:
+
+~~~json
+{"error":{"code":"download_permission_denied"}}
+~~~
+
+| HTTP | error.code | Client action |
+|---|---|---|
+| 400 | missing_attachment_id / invalid_attachment_id | Check attachment metadata and request construction |
+| 400 | missing_uploader_id / invalid_uploader_id | Check the original uploader UUID |
+| 400 | missing_device_id / invalid_device_id | Check the current device UUID |
+| 400 | unexpected_download_body | Send a GET without a body |
+| 401 | access_token_expired / invalid_access_token | Use the existing refresh flow and retry with new credentials within a bounded policy; return to login if refresh fails |
+| 403 | download_permission_denied | Account inactive, wrong device ownership or inactive device; stop automatic retries and synchronize device status |
+| 404 | file_not_found | Attachment absent or attachment/uploader mismatch |
+| 404 | route_not_found | Check URL and proxy routing |
+| 405 | download_method_not_allowed | Use GET; response includes Allow: GET |
+| 409 | file_not_ready | Upload incomplete or failed; inspect upload state and avoid infinite retries |
+| 410 | file_expired / file_deleted | Mark the attachment unavailable while preserving the chat message |
+| 500 | download_open_failed | Database lookup, file opening or size check failed; use bounded retry with backoff |
+| 503 | download_disk_busy | Queue temporarily unavailable; use bounded retry with backoff |
+
+Shared HTTP parsing errors may have additional codes. Attachment and uploader fields are checked before the token, and the device field is checked after authentication. Supply syntactically valid attachment and uploader IDs when testing 401. A database record whose disk file is missing currently produces 500 download_open_failed.
+
+Keep the attachment description across retries and use the latest token. Handle 403, 404, 409 and 410 by their cause. For decryption authentication failures, verify the key and encryption format. Sending an envelope does not automatically extend the attachment deadline.
+
+#### 26.7.6 Windows PowerShell check
+
+Replace placeholders with actual credentials and attachment information. The output is ciphertext.
+
+~~~powershell
+$baseUrl = "https://aittelegramapi.uk"
+$accessToken = "<access_token>"
+$deviceId = "<current_device_uuid>"
+$attachmentId = "<attachment_uuid>"
+$uploaderId = "<uploader_user_uuid>"
+$outputPath = Join-Path $env:TEMP "$attachmentId.bin"
+
+curl.exe --silent --show-error --fail --connect-timeout 5 --max-time 120 --header "Authorization: Bearer $accessToken" --header "deviceID: $deviceId" --header "X-Attachment-ID: $attachmentId" --header "X-Uploader-ID: $uploaderId" --output "$outputPath" "$baseUrl/download_file"
+
+if ($LASTEXITCODE -eq 0) {
+    Get-Item -LiteralPath $outputPath | Select-Object FullName, Length
+    Get-FileHash -LiteralPath $outputPath -Algorithm SHA256
+} else {
+    Write-Warning "Download failed; discard any partial output before retrying."
+    Remove-Item -LiteralPath $outputPath -ErrorAction SilentlyContinue
+}
+~~~
+
+Compare Length and SHA256 with the original ciphertext. Successful curl transfer is followed by client authenticated decryption.
+
+#### 26.7.7 Proxy and deployment checks
+
+Add this location to the existing HTTPS server block:
+
+~~~nginx
+location = /download_file {
+    proxy_pass http://127.0.0.1:8085;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 60s;
+    send_timeout 60s;
+    proxy_set_header Host $host;
+    proxy_set_header Connection close;
+}
+~~~
+
+~~~bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo ss -ltnp 'sport = :8085'
+curl --noproxy '*' -i --max-time 10 http://127.0.0.1:8085/download_file
+curl -i --max-time 10 https://aittelegramapi.uk/download_file
+~~~
+
+These probes omit attachment fields and should return 400 missing_attachment_id. Deployment acceptance also requires an authenticated full download, ciphertext length and digest checks, and client decryption. Test expired tokens, inactive devices, wrong uploaders, expired attachments and interrupted downloads.
+
+This section follows the current source. Linux compilation and real-device end-to-end acceptance remain to be confirmed in the deployment environment.

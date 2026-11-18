@@ -600,6 +600,12 @@ void UploadReactor::work() {
                             session.write_in_progress = false;
                         }
 
+                        // Content-Length 确定正文边界。最后一块写完即可校验和发布。
+                        if (session.received_bytes == session.expected_bytes &&
+                            session.written_bytes == session.expected_bytes && !session.write_in_progress) {
+                            verifyReceivedBody(fd, session, false);
+                            continue;
+                        }
                         session.body_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
                         watchBody(fd, true);
                     }
@@ -624,8 +630,7 @@ void UploadReactor::work() {
 
                             std::array<char, 8192> buffer;
                             const auto remaining = session.expected_bytes - session.received_bytes;
-                            // 正文已收齐时只探测一个字节，等待 EOF 或发现额外数据。
-                            const auto count = remaining == 0 ? 1 : std::min<std::uint64_t>(remaining, buffer.size());
+                            const auto count = std::min<std::uint64_t>(remaining, buffer.size());
                             ssize_t received;
                             do {
                                 received = ::recv(event_fd, buffer.data(), count, 0);
@@ -638,10 +643,6 @@ void UploadReactor::work() {
                             if (received == -1) {
                                 if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
                                 removeSession(event_fd);
-                                continue;
-                            }
-                            if (remaining == 0) {
-                                queueResponse(event_fd, 400, "upload_body_exceeds_content_length");
                                 continue;
                             }
 
@@ -667,7 +668,7 @@ void UploadReactor::work() {
             const auto current = it++;
             auto& session = current->second;
             if (session.http_state == UploadHttpState::ReceivingBody && !session.write_in_progress &&
-                now >= session.body_deadline) {
+                session.received_bytes < session.expected_bytes && now >= session.body_deadline) {
                 verifyReceivedBody(current->first, session, true);
             }
         }

@@ -1,25 +1,13 @@
 #pragma once
 
-#include "http/HttpRequest.h"
-#include <cstddef>
-#include <cstdint>
-#include <string>
-#include <string_view>
+#include "http/HttpRequestHeadParser.h"
 
-enum class UploadHeaderStatus { NeedMoreData, Complete, Error };
+using UploadHeaderStatus = HttpRequestHeadStatus;
+using UploadHeaderResult = HttpRequestHeadResult;
 
-struct UploadHeaderResult {
-    UploadHeaderStatus status = UploadHeaderStatus::NeedMoreData;
-    HttpRequest request;
-    std::uint64_t content_length = 0; // 客户端声明的正文长度，不代表 Service 批准大小。
-    std::size_t header_bytes = 0; // 包含末尾的 CRLF CRLF；后面的字节属于正文。
-    int http_status = 400;
-    std::string error_code;
-};
-
-// 只解析内存中的 HTTP 请求头，不读连接 socket，不收集完整正文，也不验证上传权限。
+// 上传入口的请求头规则及原有错误码。
 class UploadHttpParser {
 public:
-    static constexpr std::size_t max_header_bytes = 16 * 1024;
+    static constexpr std::size_t max_header_bytes = HttpRequestHeadParser::max_header_bytes;
     [[nodiscard]] static UploadHeaderResult parse(std::string_view input);
 };

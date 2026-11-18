@@ -10,6 +10,7 @@
 #include <boost/uuid/string_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <sodium.h>
+#include <charconv>
 
 FileRepository::FileRepository(DatabasePool& pool) : pool_(pool) {}
 
@@ -224,4 +225,42 @@ std::variant<UploadPermissionError, UploadPermissionGranted> FileRepository::cre
             }
         };
     });
+}
+
+std::variant<FileError, FileStorageInfo> FileRepository::getFileStorageKey(
+    const boost::uuids::uuid& attachment_id, const boost::uuids::uuid& uploader_id, const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id) {
+    const std::string parameters[] = {boost::uuids::to_string(attachment_id), boost::uuids::to_string(uploader_id),
+        boost::uuids::to_string(user_id), boost::uuids::to_string(device_id)};
+    ConnectionLease lease{pool_};
+    const auto result = lease.connection().execute(R"(
+        SELECT storage_key, status,
+               (deleted_at IS NOT NULL OR status IN ('deleting', 'deleted')) AS is_deleted,
+               ((expires_at IS NOT NULL AND expires_at <= statement_timestamp())
+                   OR (unreferenced_expires_at IS NOT NULL AND unreferenced_expires_at <= statement_timestamp())) AS is_expired, size_bytes,
+               EXISTS (
+                   SELECT 1 FROM app.user_devices ud
+                   JOIN app.users u ON u.id = ud.user_id
+                   WHERE ud.device_id = $4::uuid AND ud.user_id = $3::uuid
+                     AND ud.status = 'active' AND u.is_active = TRUE
+                     -- 附件描述在加密 packet 内，此处仅验证登录用户和设备。
+
+               ) AS download_allowed
+        FROM app.attachment AS a
+        WHERE a.id = $1::uuid AND a.uploader_id = $2::uuid
+    )", parameters);
+
+    if (result.rowCount() == 0) return FileError::NoSuchFile;
+    if (result.value(0, 5) != "t") return FileError::PermissionDenied;
+    if (result.value(0, 2) == "t") return FileError::FileDeleted;
+    if (result.value(0, 3) == "t") return FileError::FileExpired;
+    if (result.value(0, 1) != "ready") return FileError::FileNotReady;
+    if (result.isNull(0, 0)) return FileError::LookupFailed;
+    const auto storage_key = result.value(0, 0);
+    if (storage_key.empty()) return FileError::LookupFailed;
+    if (result.isNull(0, 4)) return FileError::LookupFailed;
+    const auto size_text = result.value(0, 4);
+    std::int64_t size_bytes = 0;
+    const auto [end, error] = std::from_chars(size_text.data(), size_text.data() + size_text.size(), size_bytes);
+    if (error != std::errc{} || end != size_text.data() + size_text.size() || size_bytes <= 0) return FileError::LookupFailed;
+    return FileStorageInfo{std::string{storage_key}, static_cast<std::uint64_t>(size_bytes)};
 }

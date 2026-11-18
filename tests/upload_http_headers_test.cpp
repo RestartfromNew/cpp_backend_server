@@ -31,6 +31,12 @@ int main() {
     require(UploadHttpParser::parse(request("Content-Length: 5\r\n Folded: value\r\n")).status == UploadHeaderStatus::Error);
     require(UploadHttpParser::parse(request("Content-Length: 5\r\nX-Test: value\nother\r\n")).status == UploadHeaderStatus::Error);
     require(UploadHttpParser::parse(std::string(UploadHttpParser::max_header_bytes, 'x')).http_status == 431);
+    const auto download = HttpRequestHeadParser::parse("GET /download_file HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+    require(download.status == HttpRequestHeadStatus::Complete && download.request.method == HttpMethod::GET);
+    require(download.request.path == "/download_file" && download.content_length == 0);
+    const auto invalid_download = HttpRequestHeadParser::parse("GET /download_file HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n");
+    require(invalid_download.status == HttpRequestHeadStatus::Error &&
+            invalid_download.error_code == "http_transfer_encoding_not_supported");
     auto get = UploadHttpParser::parse("GET /upload_file HTTP/1.1\r\nHost: localhost\r\n\r\n");
     require(get.status == UploadHeaderStatus::Complete && get.request.method == HttpMethod::GET);
     auto other_path = UploadHttpParser::parse("PUT /other HTTP/1.1\r\nHost: localhost\r\n\r\n");

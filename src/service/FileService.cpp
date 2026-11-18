@@ -91,3 +91,19 @@ std::variant<UploadPermissionError, UploadPermissionGranted> FileService::create
         return UploadPermissionError{"upload_permission_failed", "Unable to create upload permission"};
     }
 }
+
+std::variant<FileError, FileStorageInfo> FileService::getFileStorageKey(
+    const boost::uuids::uuid& attachment_id, const boost::uuids::uuid& uploader_id, const boost::uuids::uuid& user_id, const boost::uuids::uuid& device_id) {
+    if (user_id.is_nil() || device_id.is_nil()) return FileError::PermissionDenied;
+    if (attachment_id.is_nil() || uploader_id.is_nil()) return FileError::NoSuchFile;
+
+    try {
+        return fileRepository_.getFileStorageKey(attachment_id, uploader_id, user_id, device_id);
+    } catch (const DatabaseError& error) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "FileService", "file_storage_key_query_failed",
+            {{"sqlstate", error.code()}});
+    } catch (...) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "FileService", "file_storage_key_lookup_failed");
+    }
+    return FileError::LookupFailed;
+}
