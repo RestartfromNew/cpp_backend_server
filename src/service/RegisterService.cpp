@@ -149,3 +149,9 @@ EmailCodeVerificationResult RegisterService::verifyCode(const std::string& email
     sodium_bin2hex(hex.data(), hex.size(), digest.data(), digest.size());
     return userRepository_.verifyEmailCode(email, std::string{hex.data()});
 }
+bool RegisterService::checkEmailInfoAvaliability(const std::string &register_info) {
+    return userRepository_.checkEmailAvaliability(register_info);
+}
+bool  RegisterService::checkUsernameInfoAvaliability(const std::string &register_info) {
+    return userRepository_.checkUsernameAvaliability(register_info);
+}

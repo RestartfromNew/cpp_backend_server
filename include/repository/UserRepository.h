@@ -91,6 +91,9 @@ public:
     EmailCodeVerificationResult verifyEmailCode(const std::string& email, const std::string& code_digest_hex);
     // code_digest_hex 为验证码 HMAC-SHA256 摘要的 64 位十六进制文本；Send 表示记录已提交。
     GetVerificationEmailCodeResponse createEmailCodeRecord(const std::string& email, const std::string& code_digest_hex);
+    bool checkEmailAvaliability(const std::string &register_info);
+    bool checkUsernameAvaliability(const std::string &register_info);
+
 private:
     DatabasePool &databasePool_;
     const char* configured_root;

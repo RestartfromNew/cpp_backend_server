@@ -148,7 +148,7 @@ int main()
         ChatService chat_service{envelopeRepository};
         FileRepository file_repository{databasePool};
         FileService file_service{file_repository};
-        
+
         ServiceThreadPool service_thread_pool(4, chat_service, file_service);
         SessionIdentityService sessionIdentityService{userRepository};
         WebSocketDispatcher web_socket_dispatcher(service_thread_pool, authMiddleWare, sessionIdentityService,
@@ -304,6 +304,17 @@ int main()
             [&userHandler](const HttpRequest& request)->HttpResponse {
                 //返回一个HttpResponse
                 HttpResponse response=userHandler.LoginByEmail(request);
+                response.headers["Content-Type"] = "application/json";
+                return response;
+            }
+            );
+        router.addRoute(
+            HttpMethod::GET,
+            "/check_registration_availability",
+            // 公开查询邮箱或用户名是否已被注册。
+            [&userHandler](const HttpRequest& request)->HttpResponse {
+                //返回一个HttpResponse
+                HttpResponse response=userHandler.CheckRegistrationAvailaility(request);
                 response.headers["Content-Type"] = "application/json";
                 return response;
             }

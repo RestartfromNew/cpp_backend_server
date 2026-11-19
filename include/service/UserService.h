@@ -61,6 +61,7 @@ public:
 
     std::optional<std::string> getAvatarByID(const boost::uuids::uuid& avatar_id, const boost::uuids::uuid& my_uuid);
 
+
 private:
     bool verifyPassword( const std::string &password_hash, const std::string &password );
     UserRepository& repository_;

@@ -780,3 +780,31 @@ EmailCodeVerificationResult UserRepository::verifyEmailCode(const std::string& e
         return {VerifyEmailCodeResponse::CodeDoNotMatch};
     });
 }
+bool UserRepository::checkEmailAvaliability(const std::string &register_info) {
+    backend::logging::Scope operationLog{"UserRepository", "checkEmailAvaliability"};
+    const std::string parameters[] = {register_info};
+    ConnectionLease lease{databasePool_};
+    const auto result = lease.connection().execute(R"(
+        SELECT 1
+        FROM app.password_credentials AS p
+        JOIN app.users AS u ON u.id = p.user_id
+        WHERE lower(p.login_email) = lower(btrim($1::text))
+        LIMIT 1
+    )", parameters);
+    // 没有记录表示尚未注册；停用账号仍然占用邮箱。
+    return result.rowCount() == 0;
+}
+
+bool UserRepository::checkUsernameAvaliability(const std::string &register_info) {
+    backend::logging::Scope operationLog{"UserRepository", "checkUsernameAvaliability"};
+    const std::string parameters[] = {register_info};
+    ConnectionLease lease{databasePool_};
+    const auto result = lease.connection().execute(R"(
+        SELECT 1
+        FROM app.users
+        WHERE lower(username) = lower(btrim($1::text))
+        LIMIT 1
+    )", parameters);
+    // 与注册时的小写用户名保持一致；true 表示可用。
+    return result.rowCount() == 0;
+}

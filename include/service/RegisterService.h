@@ -37,6 +37,8 @@ public:
 
     RegisterResult RegisterUserByEmail( const std::string &email,const std::string & password,
         const std::string  &display_name,const std::string &username,const std::string &code);
+    bool checkEmailInfoAvaliability(const std::string &register_info);
+    bool checkUsernameInfoAvaliability(const std::string &register_info);
 private:
     bool checkEmail(const std::string &email);
     bool checkDisplayName(const std::string &display_name);

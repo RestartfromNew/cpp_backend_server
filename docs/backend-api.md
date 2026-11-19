@@ -45,6 +45,7 @@ X-User-Email: alice@example.com
 | --- | --- | --- | --- |
 | POST | /get_email_verification_code | 不需要 | 申请注册邮箱验证码 |
 | POST | `/register_by_email` | 不需要 | 邮箱密码注册 |
+| GET | /check_registration_availability | 不需要 | 查询邮箱或用户名是否已注册 |
 | POST | `/login_by_email` | 不需要 | 验证密码并签发一次性login_ticket |
 | POST | `/register_device` | login_ticket | 登记设备并完成登录 |
 | POST | `/device_verification` | login_ticket | 验证已有设备并完成登录 |
@@ -234,6 +235,56 @@ EMAIL_CODE_HMAC_KEY 为固定保存的 64 位十六进制字符串，对应 32 �
 
 当前发信在请求处理期间同步执行，SMTP 传输超时设置为 30 秒，另有数据库耗时。客户端与代理需留出相应等待时间。网络失败无法确认发送结果时，避免立即重复请求，已有记录仍可能触发一分钟限流。完整注册及实际收件仍需在部署环境验收。
 
+### 4.5 查询邮箱或用户名是否可注册
+
+GET /check_registration_availability，无需 Access Token。当前实现从 JSON 正文读取字段，客户端需发送 Content-Type: application/json。
+
+查邮箱：
+
+~~~json
+{"email":"alice@example.com"}
+~~~
+
+查用户名：
+
+~~~json
+{"username":"alice_chat01"}
+~~~
+
+每次建议提交一个字段。如果 email 是非空字符串，优先查 email；否则尝试 username。两个字段都缺失、类型错误或为空时，返回 missing_register_information。选中的值去除首尾 ASCII 空格并转小写，全空格值也返回该错误。
+
+成功统一返回 HTTP 200、Content-Type: application/json 和 Cache-Control: no-store。
+
+~~~json
+{"available":true}
+~~~
+
+available 为 true 表示当前未被注册占用，false 表示已经占用。响应字段拼写为 available。邮箱查询密码凭据表，用户名查询用户表；停用账号仍占用邮箱和用户名。当前接口只检查占用情况，完整格式规则由注册接口验证。
+
+| HTTP | code | 含义 |
+|---|---|---|
+| 400 | missing_request_body | 没有请求正文 |
+| 400 | invalid_json | 无效 JSON 或不是对象 |
+| 400 | missing_register_information | 缺少可用的 email / username 字符串，或选中值全为空格 |
+| 503 | database_unavailable | 数据库连接不可用 |
+| 500 | registration_availability_failed | 数据库查询失败 |
+
+客户端收到 available=false 时提示已被占用。available=true 是查询时的结果，正式注册仍可能因并发请求返回 409。修改输入后，应将异步响应与当次查询值关联，避免旧请求覆盖新输入状态。
+
+当前方法是带 JSON 正文的 GET，接入前需确认客户端和代理能发送、转发这类请求。仅在 URL 中添加查询参数无法被当前 Handler 读取。
+
+Windows PowerShell 联调示例：
+
+~~~powershell
+$bodyFile = Join-Path $env:TEMP ("availability-" + [guid]::NewGuid().ToString("N") + ".json")
+try {
+    [System.IO.File]::WriteAllText($bodyFile, '{"username":"alice_chat01"}')
+    curl.exe -i --request GET "https://aittelegramapi.uk/check_registration_availability" --header "Content-Type: application/json" --data-binary "@$bodyFile"
+}
+finally {
+    Remove-Item -LiteralPath $bodyFile -ErrorAction SilentlyContinue
+}
+~~~
 ## 5. 邮箱密码登录：取得一次性 login_ticket
 
 ### POST `/login_by_email`

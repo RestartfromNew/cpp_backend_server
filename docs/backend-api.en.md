@@ -45,6 +45,7 @@ Let the client calculate `Content-Length`. For ordinary protected routes, use `a
 | --- | --- | --- | --- |
 | POST | /get_email_verification_code | Not required | Request a registration email code |
 | POST | `/register_by_email` | Not required | Register with email and password |
+| GET | /check_registration_availability | Not required | Check email or username occupancy |
 | POST | `/login_by_email` | Not required | Validate credentials and issue a one-use login_ticket |
 | POST | `/register_device` | login_ticket | Register a device and complete login |
 | POST | `/device_verification` | login_ticket | Verify an existing device and complete login |
@@ -232,6 +233,56 @@ The database must contain app.email_verification_codes with code_digest, attempt
 
 Current SMTP submission is synchronous and can take up to the configured 30-second transfer timeout, plus database time. Client/proxy timeouts should account for this. After an uncertain network failure, avoid immediate duplicate requests; the existing one-minute cooldown may apply. End-to-end registration and email delivery still require deployment-environment validation.
 
+### 4.5 Check registration availability
+
+GET /check_registration_availability is public. The current implementation reads a JSON request body. Set Content-Type: application/json.
+
+Email query:
+
+~~~json
+{"email":"alice@example.com"}
+~~~
+
+Username query:
+
+~~~json
+{"username":"alice_chat01"}
+~~~
+
+Send one field per query. A non-empty string email takes precedence; otherwise the handler tries username. If neither is a non-empty string, it returns missing_register_information. The chosen value is trimmed of edge ASCII spaces and lowercased. A whitespace-only value is rejected.
+
+Success always uses HTTP 200, Content-Type: application/json and Cache-Control: no-store.
+
+~~~json
+{"available":true}
+~~~
+
+available=true means the identifier is currently unoccupied; false means already registered. The response key is spelled available. Emails are checked in password credentials and usernames in users. Inactive accounts retain their identifiers. This endpoint checks occupancy; registration performs full format validation.
+
+| HTTP | code | Meaning |
+|---|---|---|
+| 400 | missing_request_body | Missing body |
+| 400 | invalid_json | Invalid JSON or body is not an object |
+| 400 | missing_register_information | Neither email nor username is a usable string, or the chosen value is all spaces |
+| 503 | database_unavailable | Database connection unavailable |
+| 500 | registration_availability_failed | Database query failed |
+
+Show an occupied indication for available=false. A true result is only a snapshot; concurrent registration can still produce 409 at registration time. Associate asynchronous replies with their queried value so an old reply cannot overwrite newer input.
+
+The current transport is GET with a JSON body. Verify that the client and proxy forward it. URL query parameters alone are not read by this handler.
+
+Windows PowerShell example:
+
+~~~powershell
+$bodyFile = Join-Path $env:TEMP ("availability-" + [guid]::NewGuid().ToString("N") + ".json")
+try {
+    [System.IO.File]::WriteAllText($bodyFile, '{"username":"alice_chat01"}')
+    curl.exe -i --request GET "https://aittelegramapi.uk/check_registration_availability" --header "Content-Type: application/json" --data-binary "@$bodyFile"
+}
+finally {
+    Remove-Item -LiteralPath $bodyFile -ErrorAction SilentlyContinue
+}
+~~~
 ## 5. Password login: obtain a one-use login_ticket
 
 ### POST `/login_by_email`

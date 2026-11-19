@@ -48,7 +48,49 @@ HttpResponse UserHandler::FetchFriends(const HttpRequest&, const boost::uuids::u
             "fetch_friends_failed", "Unable to fetch friends");
     }
 }
+HttpResponse UserHandler::CheckRegistrationAvailaility(const HttpRequest& request) {
+    backend::logging::Scope operationLog{"UserHandler", "CheckRegistrationAvailaility"};
+    if (request.body.empty()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "missing_request_body", "Request body is required");
+    }
+    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_json", "Request body must be a valid JSON object");
+    }
+    auto infoIterator = body.find("email");
+    if (infoIterator == body.end() || !infoIterator->is_string() || infoIterator->get_ref<const std::string&>().empty()) {
+        infoIterator = body.find("username");
+        if (infoIterator == body.end() || !infoIterator->is_string() || infoIterator->get_ref<const std::string&>().empty()) {
+            return ErrorResponseMaker(HttpStatus::Bad_Request,
+                "missing_register_information", "Email or username must be a non-empty string");
+        }
+    }
 
+    const auto value = toLower(conversionInput(infoIterator->get<std::string>()));
+    if (value.empty()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request,
+            "missing_register_information", "Email or username must not be blank");
+    }
+    try {
+        const bool available = infoIterator.key() == "email" ?
+            registerService_.checkEmailInfoAvaliability(value) :
+            registerService_.checkUsernameInfoAvaliability(value);
+        HttpResponse response;
+        response.status = HttpStatus::Ok;
+        response.headers["Content-Type"] = "application/json";
+        response.headers["Cache-Control"] = "no-store";
+        response.body = nlohmann::json{{"available", available}}.dump();
+        return response;
+    } catch (const DatabaseError& error) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "UserHandler", "registration_availability_failed",
+            {{"sqlstate", error.code()}});
+        if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08")) {
+            return ErrorResponseMaker(HttpStatus::Service_Unavailable, "database_unavailable", "Service temporarily unavailable");
+        }
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
+            "registration_availability_failed", "Unable to check registration availability");
+    }
+}
 HttpResponse UserHandler::ProcessFriendshipRequest(
     const HttpRequest& request, const boost::uuids::uuid& my_uuid) {
     backend::logging::Scope operationLog{"UserHandler", "ProcessFriendshipRequest"};
