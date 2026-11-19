@@ -9,6 +9,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 
 namespace {
     const std::string EMAIL_PATTERN = "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*" \
@@ -17,9 +18,18 @@ namespace {
     const std::string USERNAME_PATTERN="^[a-z0-9_.-]{3,30}$";
 
 }
-RegisterService::RegisterService(UserRepository& repository):userRepository_{repository} {};
+RegisterService::RegisterService(UserRepository& repository):userRepository_{repository} {
+    const char* raw_key = std::getenv("EMAIL_CODE_HMAC_KEY");
+    std::size_t decoded = 0;
+    if (raw_key == nullptr || std::char_traits<char>::length(raw_key) != code_hmac_key_.size() * 2 ||
+        sodium_hex2bin(code_hmac_key_.data(), code_hmac_key_.size(), raw_key,
+            code_hmac_key_.size() * 2, nullptr, &decoded, nullptr) != 0 || decoded != code_hmac_key_.size()) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "RegisterService", "email_code_key_invalid");
+        throw std::runtime_error("EMAIL_CODE_HMAC_KEY must contain exactly 64 hexadecimal characters");
+    }
+}
 //默认再handler中已经进行过去掉前后空格，email已经全部转换为小写
-RegisterResult RegisterService::RegisterUserByEmail( const std::string &email,const std::string & password,  const std::string  &display_name,const std::string &username) {
+RegisterResult RegisterService::RegisterUserByEmail( const std::string &email,const std::string & password,  const std::string  &display_name,const std::string &username,const std::string &code) {
     backend::logging::Scope operationLog{"RegisterService", "RegisterUserByEmail"};
     if (!checkEmail(email))
         return RegisterResult{RegisterError::InvalidEmail};
@@ -34,13 +44,24 @@ RegisterResult RegisterService::RegisterUserByEmail( const std::string &email,co
     if (!checkUsername(normalized_username))
         return RegisterResult{RegisterError::InvalidUsername};
     try {
-        std::string password_hash=passwordHash(password);
-        auto user =userRepository_.CreateNewUserByEmail(email,password_hash,display_name,normalized_username);
-        if (user)
-            //这是一个装user的容器，要把user取出来
-            return RegisterResult{*user};
-        else
-            return RegisterResult{RegisterError::RegisterFailed};
+        const auto verified = verifyCode(email, code);
+        switch (verified.status) {
+            case VerifyEmailCodeResponse::CodeDoNotMatch: return RegisterResult{RegisterError::CodeDoNotMatch};
+            case VerifyEmailCodeResponse::ToMuchTry: return RegisterResult{RegisterError::ToMuchTry};
+            case VerifyEmailCodeResponse::CodeExpired: return RegisterResult{RegisterError::CodeExpired};
+            case VerifyEmailCodeResponse::Verified: break;
+        }
+        const auto password_hash = passwordHash(password);
+        auto created = userRepository_.CreateNewUserByEmail(email, password_hash, display_name, normalized_username, verified.record_id);
+        if (const auto* user = std::get_if<User>(&created)) return RegisterResult{*user};
+        // 预验证后验证码可能被另一个注册消费或过期，映射事务内的再次检查结果。
+        switch (std::get<VerifyEmailCodeResponse>(created)) {
+            case VerifyEmailCodeResponse::CodeDoNotMatch: return RegisterResult{RegisterError::CodeDoNotMatch};
+            case VerifyEmailCodeResponse::ToMuchTry: return RegisterResult{RegisterError::ToMuchTry};
+            case VerifyEmailCodeResponse::CodeExpired: return RegisterResult{RegisterError::CodeExpired};
+            case VerifyEmailCodeResponse::Verified: return RegisterResult{RegisterError::RegisterFailed};
+        }
+        return RegisterResult{RegisterError::RegisterFailed};
     }
     catch (const DatabaseError &error) {
         if (error.kind()==DatabaseErrorKind::Query&&error.code() == "23505" &&error.constraint() =="password_credentials_login_email_unique") {
@@ -116,4 +137,15 @@ std::string RegisterService::passwordHash(const std::string &password) {
        }
 
     return std::string(hashedPassword);
+}
+EmailCodeVerificationResult RegisterService::verifyCode(const std::string& email, const std::string& code) {
+    // 与发信 Service 使用同一用途、邮箱和密钥，保持摘要字节完全一致。
+    // 非六位数字也进入失败计数，避免格式错误请求绕过尝试次数限制。
+    const bool valid_format = code.size() == 6 && code.find_first_not_of("0123456789") == std::string::npos;
+    const std::string message = "register\n" + email + "\n" + (valid_format ? code : "invalid-code");
+    std::array<unsigned char, crypto_auth_hmacsha256_BYTES> digest{};
+    crypto_auth_hmacsha256(digest.data(), reinterpret_cast<const unsigned char*>(message.data()), message.size(), code_hmac_key_.data());
+    std::array<char, crypto_auth_hmacsha256_BYTES * 2 + 1> hex{};
+    sodium_bin2hex(hex.data(), hex.size(), digest.data(), digest.size());
+    return userRepository_.verifyEmailCode(email, std::string{hex.data()});
 }

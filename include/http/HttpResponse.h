@@ -21,6 +21,7 @@ enum class HttpStatus {
     Payload_Too_Large = 413,
     Unsupported_Media_Type = 415,
     Unprocessable_Content = 422,
+    Too_Many_Requests = 429,
     Internal_Server_Error = 500,
     Service_Unavailable = 503,
     Bad_Gateway = 502,
@@ -54,6 +55,8 @@ constexpr const char* reasonPhrase(HttpStatus status)
             return "Unsupported Media Type";
         case HttpStatus::Unprocessable_Content:
             return "Unprocessable Content";
+        case HttpStatus::Too_Many_Requests:
+            return "Too Many Requests";
         case HttpStatus::Internal_Server_Error:
             return "Internal Server Error";
         case HttpStatus::Bad_Gateway:

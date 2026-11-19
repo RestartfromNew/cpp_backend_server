@@ -15,6 +15,7 @@ find_package(jwt-cpp CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_path(TURBOJPEG_INCLUDE_DIR NAMES turbojpeg.h REQUIRED)
 find_library(TURBOJPEG_LIBRARY NAMES turbojpeg REQUIRED)
+find_package(CURL REQUIRED)
 add_executable(cpp_backend_server src/main.cpp
         src/repository/LoginTicketRepository.cpp
         src/service/LoginTicketService.cpp
@@ -119,6 +120,9 @@ add_executable(cpp_backend_server src/main.cpp
         include/domain/DownloadSession.h
         src/file/DownloadReactor.cpp
         include/file/DownloadReactor.h
+        src/service/EmailVerificationService.cpp
+        include/service/EmailVerificationService.h
+        include/domain/EmailVerifcationResult.h
 )
 target_include_directories(
         cpp_backend_server
@@ -139,6 +143,7 @@ target_link_libraries(
         ${TURBOJPEG_LIBRARY}
         jwt-cpp::jwt-cpp
         OpenSSL::Crypto
+        CURL::libcurl
 )
 target_compile_options(
         cpp_backend_server
@@ -298,3 +303,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_tests_properties(upload_reactor_disk_smoke PROPERTIES TIMEOUT 20)
 endif()
 
+# Manual integration test: execution sends a real verification email.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(email_verification_smoke_test
+        tests/email_verification_smoke_test.cpp
+        src/service/EmailVerificationService.cpp
+        src/repository/UserRepository.cpp
+        src/databases/DatabasePool.cpp
+        src/databases/DatabaseConnection.cpp
+        src/databases/DatabaseResult.cpp
+        src/databases/DatabaseError.cpp
+        src/databases/ConnectionLease.cpp
+        src/common/UniqueFd.cpp)
+    target_include_directories(email_verification_smoke_test PRIVATE
+        ${PROJECT_SOURCE_DIR}/include ${SODIUM_INCLUDE_DIRS})
+    target_link_libraries(email_verification_smoke_test PRIVATE
+        PostgreSQL::PostgreSQL Threads::Threads Boost::headers
+        nlohmann_json::nlohmann_json ${SODIUM_LIBRARIES} CURL::libcurl)
+    target_compile_options(email_verification_smoke_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()

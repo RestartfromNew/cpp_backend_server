@@ -7,6 +7,8 @@
 #include "handler/UserHandler.h"
 #include "handler/LoginTicketResponse.h"
 #include "service/LoginTicketService.h"
+#include "service/EmailVerificationService.h"
+#include <regex>
 #include "nlohmann/json.hpp"
 #include <boost/uuid/string_generator.hpp>
 #include <algorithm>
@@ -142,8 +144,8 @@ std::string UserHandler::conversionInput(const std::string& input) {
 }
 
 UserHandler::UserHandler(UserService& userService,RegisterService& registerService,
-    LoginService &loginService,KeyService& keyService,WebSocketPool &web_socket_pool, LoginTicketService& tickets): userService_(userService),registerService_(registerService)
-,loginService_(loginService),keyService_(keyService),webSocketPool_(web_socket_pool), tickets_(tickets){}
+    LoginService &loginService,KeyService& keyService,WebSocketPool &web_socket_pool, LoginTicketService& tickets, EmailVerificationService& emailVerificationService): userService_(userService),registerService_(registerService)
+,loginService_(loginService),keyService_(keyService),webSocketPool_(web_socket_pool), tickets_(tickets), emailVerificationService_(emailVerificationService){}
 
 HttpResponse UserHandler::Register(const HttpRequest &request) {
     backend::logging::Scope operationLog{"UserHandler", "Register"};
@@ -199,6 +201,15 @@ HttpResponse UserHandler::Register(const HttpRequest &request) {
             "user name must be a non-empty string"
         );
     }
+    const auto verification_codeIterator =body.find("verification_code");
+    if (verification_codeIterator == body.end() ||!verification_codeIterator->is_string() ||verification_codeIterator->get_ref<const std::string&>().empty()) {
+        return ErrorResponseMaker(
+            HttpStatus::Bad_Request,
+            "missing_verification_code",
+            "verification code must be a non-empty string"
+        );
+    }
+    std::string verification_code=verification_codeIterator->get_ref<const std::string&>();
     std::string userEmail =emailIterator->get<std::string>();
     std::string userPassword =passwordIterator->get<std::string>();
     std::string userDisplayName =displayNameIterator->get<std::string>();
@@ -207,7 +218,7 @@ HttpResponse UserHandler::Register(const HttpRequest &request) {
     userPassword=conversionInput(userPassword);
     userDisplayName=conversionInput(userDisplayName);
     userName=conversionInput(userName);
-    RegisterResult registerResult= registerService_.RegisterUserByEmail(userEmail,userPassword,userDisplayName,userName);
+    RegisterResult registerResult= registerService_.RegisterUserByEmail(userEmail,userPassword,userDisplayName,userName,verification_code);
     auto user=registerResult.result;
     if (std::holds_alternative<User>(user)) {
         const User& user = std::get<User>(registerResult.result);
@@ -221,6 +232,12 @@ HttpResponse UserHandler::Register(const HttpRequest &request) {
     }
     const auto error = std::get<RegisterError>(registerResult.result);
     switch (error) {
+        case RegisterError::CodeDoNotMatch:
+            return ErrorResponseMaker(HttpStatus::Bad_Request, "verification_code_mismatch", "Verification code is incorrect or already used");
+        case RegisterError::CodeExpired:
+            return ErrorResponseMaker(HttpStatus::Bad_Request, "verification_code_expired", "Request a new verification code");
+        case RegisterError::ToMuchTry:
+            return ErrorResponseMaker(HttpStatus::Too_Many_Requests, "verification_code_attempts_exceeded", "Request a new verification code");
         case RegisterError::RegisterFailed:
             return ErrorResponseMaker(
                 HttpStatus::Internal_Server_Error,
@@ -775,4 +792,63 @@ HttpResponse UserHandler::get_avatar(const HttpRequest& request, const boost::uu
         return ErrorResponseMaker(HttpStatus::Internal_Server_Error,
             "avatar_read_failed", "Unable to read avatar file");
     }
+}
+HttpResponse UserHandler::GetVerificationEmailCode(const HttpRequest& request) {
+    backend::logging::Scope operationLog{"UserHandler", "GetVerificationEmailCode"};
+    if (request.body.empty()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "missing_request_body", "Request body is required");
+    }
+    const auto body = nlohmann::json::parse(request.body, nullptr, false);
+    if (body.is_discarded() || !body.is_object()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_json", "Request body must be a valid JSON object");
+    }
+    const auto field = body.find("email");
+    if (field == body.end() || !field->is_string() || field->get_ref<const std::string&>().empty()) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "missing_email", "Email must be a non-empty string");
+    }
+
+    // 与注册入口一致，先去除首尾普通空格并转小写；同一值用于摘要、查库和收件地址。
+    const auto email = toLower(conversionInput(field->get<std::string>()));
+    static const std::regex email_pattern(R"(^[a-zA-Z0-9_+&*-]+(?:\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,10}$)");
+    if (email.size() > 254 || !std::regex_match(email, email_pattern)) {
+        return ErrorResponseMaker(HttpStatus::Bad_Request, "invalid_email", "Invalid email");
+    }
+
+    try {
+        switch (emailVerificationService_.getVerificationEmailCode(email)) {
+            case GetVerificationEmailCodeResponse::EmailRegistered:
+                return ErrorResponseMaker(HttpStatus::Conflict, "email_already_exists", "This email is already registered");
+            case GetVerificationEmailCodeResponse::ToMuchRequest: {
+                auto response = ErrorResponseMaker(HttpStatus::Too_Many_Requests,
+                    "too_many_requests", "Please wait before requesting another code");
+                response.headers["Retry-After"] = "60";
+                return response;
+            }
+            case GetVerificationEmailCodeResponse::Send: {
+                HttpResponse response;
+                response.status = HttpStatus::Ok;
+                response.headers["Content-Type"] = "application/json";
+                // Send 表示 SMTP 接受提交；验证码由邮件送达，不放入 HTTP 响应。
+                response.body = nlohmann::json{
+                    {"success", true}, {"code", "verification_code_sent"},
+                    {"expires_in", 300}, {"resend_after", 60}
+                }.dump();
+                return response;
+            }
+            case GetVerificationEmailCodeResponse::UnknowError:
+                return ErrorResponseMaker(HttpStatus::Service_Unavailable,
+                    "verification_email_send_failed", "Unable to send verification email");
+        }
+    } catch (const DatabaseError& error) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "UserHandler", "email_code_database_failed",
+            {{"sqlstate", error.code()}});
+        if (error.kind() == DatabaseErrorKind::Connection || error.code().starts_with("08")) {
+            return ErrorResponseMaker(HttpStatus::Service_Unavailable, "database_unavailable", "Service temporarily unavailable");
+        }
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error, "verification_code_failed", "Unable to create verification code");
+    } catch (const std::exception&) {
+        backend::logging::Logger::write(backend::logging::Level::Error, "UserHandler", "email_code_failed");
+        return ErrorResponseMaker(HttpStatus::Internal_Server_Error, "verification_code_failed", "Unable to create verification code");
+    }
+    throw std::logic_error("Unhandled GetVerificationEmailCodeResponse");
 }

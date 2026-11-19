@@ -7,6 +7,7 @@
 #include <boost/uuid/uuid.hpp>
 
 #include <optional>
+#include <variant>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "databases/DatabasePool.h"
 #include "domain/FriendshipRequestRecord.h"
 #include "domain/FriendRequestProcess.h"
+#include "domain/EmailVerifcationResult.h"
 //负责接受service来的业务数据，包装成数据库需要形式，执行数据库连接和命令，返回service层处理需要的结果
 //借用但是不拥有数据库连接，不负责析构
 /** @brief 仅供密码验证使用的内部记录，含 password_hash；不能直接序列化成 API 响应或日志。 */
@@ -70,7 +72,7 @@ class UserRepository {
 public:
     explicit UserRepository(DatabasePool &databasePool);
     std::optional<User> findByEmail(const std::string& email);
-    std::optional<User> CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name,const std::string &username);
+    std::variant<User, VerifyEmailCodeResponse> CreateNewUserByEmail(const std::string& email, const std::string& password_hash, const std::string& display_name, const std::string& username, const boost::uuids::uuid& code_record_id);
     std::optional<PasswordLoginRecord> FindLoginRecordByEmail(const std::string &email);
     std::optional<std::string> FindLoginRecordByUserId(const boost::uuids::uuid &user_id);
 
@@ -86,7 +88,9 @@ public:
         const boost::uuids::uuid& device_id);
     std::optional<boost::uuids::uuid> saveAvatar(const boost::uuids::uuid& my_id, std::string_view avatar_bytes);
     std::optional<std::string> getAvatarById(const boost::uuids::uuid& avatar_id, const boost::uuids::uuid& my_id);
-
+    EmailCodeVerificationResult verifyEmailCode(const std::string& email, const std::string& code_digest_hex);
+    // code_digest_hex 为验证码 HMAC-SHA256 摘要的 64 位十六进制文本；Send 表示记录已提交。
+    GetVerificationEmailCodeResponse createEmailCodeRecord(const std::string& email, const std::string& code_digest_hex);
 private:
     DatabasePool &databasePool_;
     const char* configured_root;

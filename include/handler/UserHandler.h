@@ -24,11 +24,12 @@
 
 
 class LoginTicketService;
+class EmailVerificationService;
 /** @brief 用户 HTTP 协议边界：检查 JSON，调用 Service，映射状态与错误；在线通知在持久化成功后进行。 */
 class UserHandler {
 public:
     explicit UserHandler(UserService& userService,RegisterService& registerService,
-        LoginService& loginService,KeyService& keyService,WebSocketPool& webSocketPool, LoginTicketService& tickets);
+        LoginService& loginService,KeyService& keyService,WebSocketPool& webSocketPool, LoginTicketService& tickets, EmailVerificationService& emailVerificationService);
     HttpResponse getUser(const HttpRequest& request);
     HttpResponse Register(const HttpRequest& request);
     HttpResponse LoginByEmail(const HttpRequest& request);
@@ -41,6 +42,7 @@ public:
     HttpResponse verifyaccess(const HttpRequest& request);
     HttpResponse RevokeDevice(const HttpRequest& request,const boost::uuids::uuid& my_uuid);
     HttpResponse DeviceVerification(const HttpRequest& request);
+    HttpResponse GetVerificationEmailCode(const HttpRequest& request);
     HttpResponse uploadAvatar(const HttpRequest& request,const boost::uuids::uuid& my_uuid);
     HttpResponse get_avatar(const HttpRequest& request, const boost::uuids::uuid& my_uuid);
 
@@ -55,6 +57,7 @@ private:
     KeyService& keyService_;
     WebSocketPool &webSocketPool_;
     LoginTicketService& tickets_;
+    EmailVerificationService& emailVerificationService_;
 
 };
 

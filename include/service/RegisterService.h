@@ -12,6 +12,8 @@
 #include "nlohmann/json.hpp"
 #include <repository/UserRepository.h>
 #include <variant>
+#include <array>
+#include "domain/EmailVerifcationResult.h"
 
 enum RegisterError{
     InvalidEmail,
@@ -21,6 +23,7 @@ enum RegisterError{
     EmailExists,
     RegisterFailed,
     UsernameExists,
+    CodeDoNotMatch, CodeExpired,ToMuchTry
 };
 /** @brief 账号注册业务返回值；状态与可选用户数据的含义由 Handler 映射为 HTTP 响应。 */
 struct RegisterResult {
@@ -33,14 +36,16 @@ public:
     ~RegisterService()=default;
 
     RegisterResult RegisterUserByEmail( const std::string &email,const std::string & password,
-        const std::string  &display_name,const std::string &username);
+        const std::string  &display_name,const std::string &username,const std::string &code);
 private:
     bool checkEmail(const std::string &email);
     bool checkDisplayName(const std::string &display_name);
     bool checkPassword(const std::string &password);
     bool checkUsername(const std::string &username);
+    EmailCodeVerificationResult verifyCode(const std::string &email,const std::string &code);
     std::string passwordHash(const std::string &password);
     UserRepository &userRepository_;
+    std::array<unsigned char, crypto_auth_hmacsha256_KEYBYTES> code_hmac_key_{};
 };
 
 

@@ -39,12 +39,24 @@
 #include "repository/EnvelopeRepository.h"
 #include "repository/FileRepository.h"
 #include "service/FileService.h"
+#include "service/EmailVerificationService.h"
+#include <curl/curl.h>
 #include "file/UploadReactor.h"
 #include "file/DownloadReactor.h"
 #include <atomic>
 #include <memory>
 #include <thread>
 namespace {
+// 生命周期覆盖全部后台线程和 SMTP 句柄。
+class CurlRuntime {
+public:
+    CurlRuntime() {
+        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) throw std::runtime_error("Failed to initialize libcurl");
+    }
+    ~CurlRuntime() { curl_global_cleanup(); }
+    CurlRuntime(const CurlRuntime&) = delete;
+    CurlRuntime& operator=(const CurlRuntime&) = delete;
+};
 // Block before starting ANY background thread. Main consumes signals as data;
 // no mutex, logging, or join is executed inside a signal handler.
 /** @brief Linux 信号 fd 生命周期包装；主线程同步接收停止请求，先停接入再等待后台线程退出。 */
@@ -87,6 +99,7 @@ int main()
     backend::logging::Logger::write(backend::logging::Level::Info, "server", "process_start");
     try {
         StopSignals stopSignals; // Destroyed last, after all background threads.
+        CurlRuntime curlRuntime;
         std::cout << std::unitbuf;
         //读取配置
         if (sodium_init() < 0) {
@@ -135,6 +148,7 @@ int main()
         ChatService chat_service{envelopeRepository};
         FileRepository file_repository{databasePool};
         FileService file_service{file_repository};
+        
         ServiceThreadPool service_thread_pool(4, chat_service, file_service);
         SessionIdentityService sessionIdentityService{userRepository};
         WebSocketDispatcher web_socket_dispatcher(service_thread_pool, authMiddleWare, sessionIdentityService,
@@ -149,7 +163,8 @@ int main()
                 web_socket_pool.push_To_User(friend_record.user.id, event);
             }
         });
-        UserHandler userHandler{userService,registerService,loginService,keyService,web_socket_pool,loginTickets};
+        EmailVerificationService emailVerificationService{userRepository};
+        UserHandler userHandler{userService,registerService,loginService,keyService,web_socket_pool,loginTickets,emailVerificationService};
         ChatHandler chatHandler{keyService,loginTickets};
         Router router{authMiddleWare};
         router.addProtectedRoute(
@@ -315,6 +330,15 @@ int main()
            "/device_verification",
            [&userHandler](const HttpRequest& request)->HttpResponse {
                HttpResponse response = userHandler.DeviceVerification(request);
+               response.headers["Content-Type"] = "application/json";
+               return response;
+           }
+       );
+        router.addRoute(
+           HttpMethod::POST,
+           "/get_email_verification_code",
+           [&userHandler](const HttpRequest& request)->HttpResponse {
+               HttpResponse response = userHandler.GetVerificationEmailCode(request);
                response.headers["Content-Type"] = "application/json";
                return response;
            }

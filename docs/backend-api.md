@@ -43,6 +43,7 @@ X-User-Email: alice@example.com
 
 | 方法 | 路径 | 认证方式 | 当前用途 |
 | --- | --- | --- | --- |
+| POST | /get_email_verification_code | 不需要 | 申请注册邮箱验证码 |
 | POST | `/register_by_email` | 不需要 | 邮箱密码注册 |
 | POST | `/login_by_email` | 不需要 | 验证密码并签发一次性login_ticket |
 | POST | `/register_device` | login_ticket | 登记设备并完成登录 |
@@ -106,13 +107,51 @@ X-User-Email: alice@example.com
 
 ## 4. 邮箱密码注册
 
-### POST `/register_by_email`
+### 4.1 申请注册邮箱验证码
+
+POST /get_email_verification_code 为公开接口，无需 Access Token。请求使用 Content-Type: application/json。
+
+~~~json
+{"email":"alice@example.com"}
+~~~
+
+服务端去除邮箱首尾普通空格并转小写，再检查邮箱格式和不超过 254 字节的长度。注册时使用相同的规范化邮箱。
+
+HTTP 200 表示 SMTP 服务接受了邮件提交，实际收件可能稍后完成。
+
+~~~json
+{
+  "success": true,
+  "code": "verification_code_sent",
+  "expires_in": 300,
+  "resend_after": 60
+}
+~~~
+
+| HTTP | code | 含义 |
+|---|---|---|
+| 400 | missing_request_body / invalid_json | 缺少正文，或不是合法 JSON 对象 |
+| 400 | missing_email / invalid_email | 邮箱缺失、类型错误、为空或格式不合法 |
+| 409 | email_already_exists | 邮箱已经注册 |
+| 429 | too_many_requests | 同一规范化邮箱在一分钟内已经创建注册验证码记录 |
+| 503 | verification_email_send_failed | SMTP 初始化或提交失败 |
+| 503 | database_unavailable | 数据库连接不可用 |
+| 500 | verification_code_failed | 数据库查询或其他内部操作失败 |
+
+429 响应带 Retry-After: 60。限流依据记录创建时间，SMTP 失败或结果不确定时也可能已经产生记录，仍需等待。成功后客户端启动 60 秒重发倒计时；收到 429 时按响应头等待。HTTP 响应不包含验证码或摘要。
+
+验证码为六位数字字符串，可能以 0 开头。每条记录从数据库插入时起有效 5 分钟；expires_in 表示配置有效期，邮件传输会消耗其中一部分时间。默认每条记录最多尝试 5 次。
+
+### 4.2 携带验证码注册
+
+POST `/register_by_email`
 
 无需 Access Token。
 
 ```json
 {
   "email": "alice@example.com",
+  "verification_code": "482917",
   "password": "TestPass123!",
   "username": "alice_chat01",
   "display_name": "Alice"
@@ -125,6 +164,7 @@ X-User-Email: alice@example.com
 | password | string | 是 | 去除首尾普通空格后，6～20 个 ASCII 测试字符范围内满足密码正则；至少有小写字母、大写字母、数字、非字母数字且非空白的字符，整体不能含空白 |
 | display_name | string | 是 | 去除首尾普通空格后，1～50 个 Unicode 码点；支持中文、大小写、符号、空格和表情；不能全为空格或包含 NUL |
 | username | string | 是 | 去除首尾普通空格，自动转 ASCII 小写后，3～30 个字符；允许 a-z、0-9、点、下划线和短横线，符号位置和重复次数自由；用户名唯一 |
+| verification_code | string | 是 | 邮件里的六位 ASCII 数字，保留开头的 0，按收到的原值提交 |
 
 这里的“去除空格”仅指代码移除首尾的 ASCII 空格，不是所有 Unicode 空白字符。当前密码也会被去除首尾空格，这应在后续修正；客户端暂时不要使用带首尾空格的密码。非 ASCII 密码的长度/字符分类不应按 Unicode 字符数理解，当前实现未定义完善的 Unicode 密码规则。
 
@@ -167,8 +207,32 @@ X-User-Email: alice@example.com
 | 409 | `email_already_exists` | 邮箱唯一约束冲突且被服务层识别 |
 | 409 | `username_already_exists` |用户名唯一约束冲突且被服务层识别 |
 | 500 | `register_failed` | 注册服务返回注册失败 |
+| 400 | missing_verification_code | 字段缺失、类型错误或空字符串 |
+| 400 | verification_code_mismatch | 无可匹配的有效记录，非空验证码格式错误，或匹配记录已消费 |
+| 400 | verification_code_expired | 没有未消费且未过期的注册验证码，或选中的记录在创建账号前过期 |
+| 429 | verification_code_attempts_exceeded | 尚有未消费且未过期记录，但次数全部耗尽，需要重新申请 |
 
 多个字段同时错误时，只返回首先检查到的一个错误。重复邮箱映射依赖数据库错误码 `23505` 和约束名称 `password_credentials_login_email_unique`，数据库结构必须与代码一致。
+
+### 4.3 验证、次数与事务规则
+
+按用户规则，同一规范化邮箱的任意一条注册验证码记录，只要未消费、未过期、还有剩余次数且摘要匹配，就可通过。重新申请不会立即使旧的有效验证码失效。
+
+客户端提交验证码明文字符串。服务端使用 EMAIL_CODE_HMAC_KEY，将 register 用途、规范化邮箱和验证码计算为 HMAC-SHA256，与存储摘要比较。客户端无需计算或提交摘要。
+
+attempt_count 表示已用次数，剩余次数为 max_attempts 减 attempt_count。非空的错误验证码或格式错误验证码，会使该邮箱所有仍有效候选记录的 attempt_count 各加 1，即剩余次数各减 1。错误计数会正常提交，不因注册失败回滚。最后一次允许的错误仍返回 verification_code_mismatch；之后所有可用记录次数耗尽时返回 verification_code_attempts_exceeded。缺失、类型错误和空字符串在 Handler 阶段拒绝，不进入尝试计数。用户名、密码等字段也先于验证码验证。
+
+匹配后先返回记录 ID。注册事务重新锁定并检查这条记录，设置 consumed_at，创建用户和密码凭据，并设置 email_verified_at。以上一起提交，用户名重复或插入失败时一起回滚，因此验证码仍可在有效期和剩余次数内重试。同一条记录的并发复用无法创建两个账号。
+
+收到 201 后按现有登录及设备完成流程继续，注册响应不返回 access_token 或 refresh_token。验证码不匹配时允许修改输入，过期或耗尽时提示重新获取，并遵守重发倒计时。修改邮箱后应为新邮箱重新申请验证码。
+
+### 4.4 后端部署前提
+
+数据库需有 app.email_verification_codes，包含 code_digest、attempt_count、max_attempts、expires_at 和 consumed_at 等字段，运行角色需要 SELECT、INSERT、UPDATE 权限。默认表结构的 attempt_count 为 0，max_attempts 为 5；密码凭据表需有 email_verified_at。
+
+EMAIL_CODE_HMAC_KEY 为固定保存的 64 位十六进制字符串，对应 32 随机字节。发信与注册必须使用同一把密钥。另需配置 SMTP_URL、SMTP_USERNAME、SMTP_PASSWORD、SMTP_FROM 和 SMTP_FROM_NAME。
+
+当前发信在请求处理期间同步执行，SMTP 传输超时设置为 30 秒，另有数据库耗时。客户端与代理需留出相应等待时间。网络失败无法确认发送结果时，避免立即重复请求，已有记录仍可能触发一分钟限流。完整注册及实际收件仍需在部署环境验收。
 
 ## 5. 邮箱密码登录：取得一次性 login_ticket
 

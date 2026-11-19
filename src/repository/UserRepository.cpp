@@ -122,11 +122,38 @@ std::optional<User> UserRepository::findByEmail(const std::string& email)
     };
 }
 
-std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &email,const std::string & password_hash, const std::string & display_name,const std::string &username) {
+std::variant<User, VerifyEmailCodeResponse> UserRepository::CreateNewUserByEmail(const std::string& email, const std::string& password_hash, const std::string& display_name, const std::string& username, const boost::uuids::uuid& code_record_id) {
     backend::logging::Scope operationLog{"UserRepository", "CreateNewUserByEmail"};
     ConnectionLease lease(databasePool_);
 
-    return lease.connection().withTransaction([&]() -> User {
+    return lease.connection().withTransaction([&]() -> std::variant<User, VerifyEmailCodeResponse> {
+        auto& db = lease.connection();
+        (void)db.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+        const std::string code_parameters[] = {email, boost::uuids::to_string(code_record_id)};
+        (void)db.execute(R"(
+            SELECT pg_advisory_xact_lock(hashtextextended(
+                'register-email-code:' || lower(btrim($1::text)), 0))
+        )", std::span{code_parameters}.first<1>());
+        // 前置验证后可能过期或被并发注册消费，必须在创建用户的事务内再次核对。
+        const auto record = db.execute(R"(
+            SELECT consumed_at IS NULL, expires_at > clock_timestamp(), attempt_count < max_attempts
+            FROM app.email_verification_codes
+            WHERE id = $2::uuid AND email = lower(btrim($1::text)) AND purpose = 'register'
+            FOR UPDATE
+        )", code_parameters);
+        if (record.rowCount() != 1 || record.value(0, 0) != "t") return VerifyEmailCodeResponse::CodeDoNotMatch;
+        if (record.value(0, 1) != "t") return VerifyEmailCodeResponse::CodeExpired;
+        if (record.value(0, 2) != "t") return VerifyEmailCodeResponse::ToMuchTry;
+        // 消费与创建账号属于同一事务，后续插入失败会一起回滚。
+        const auto consumed = db.execute(R"(
+            UPDATE app.email_verification_codes
+            SET consumed_at = clock_timestamp()
+            WHERE id = $2::uuid AND email = lower(btrim($1::text)) AND purpose = 'register'
+              AND consumed_at IS NULL AND expires_at > clock_timestamp() AND attempt_count < max_attempts
+            RETURNING id
+        )", code_parameters);
+        if (consumed.rowCount() != 1) return VerifyEmailCodeResponse::CodeExpired;
+
         //这是一个lambda函数，捕获this,不接受参数，返回User，他先把结果返回给withTransaction，然后再返回给service
         const std::string userParameters[] = {display_name,username};
         auto result = lease.connection().execute(
@@ -155,9 +182,10 @@ std::optional<User> UserRepository::CreateNewUserByEmail(const std::string &emai
                 INSERT INTO app.password_credentials (
                     user_id,
                     login_email,
-                    password_hash
+                    password_hash,
+                    email_verified_at
                 )
-                VALUES ($1, $2, $3)
+                VALUES ($1, $2, $3, clock_timestamp())
             )",   credentialParameters
         );
 
@@ -647,4 +675,108 @@ std::optional<std::string> UserRepository::getAvatarById(const boost::uuids::uui
     }
     if (jpeg_bytes.empty()) throw std::system_error(std::make_error_code(std::errc::io_error), "empty avatar file");
     return jpeg_bytes;
+}
+
+GetVerificationEmailCodeResponse UserRepository::createEmailCodeRecord(
+    const std::string& email, const std::string& code_digest_hex) {
+    backend::logging::Scope operationLog{"UserRepository", "createEmailCodeRecord"};
+    if (email.empty() || email.find_first_not_of(' ') == std::string::npos || email.find('\0') != std::string::npos) {
+        throw std::invalid_argument("Email must be a non-empty string");
+    }
+    if (code_digest_hex.size() != 64 || code_digest_hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        throw std::invalid_argument("Verification code digest must be 64 hexadecimal characters");
+    }
+
+    const std::string parameters[] = {email, code_digest_hex};
+    ConnectionLease lease{databasePool_};
+    auto& db = lease.connection();
+    return db.withTransaction([&]() -> GetVerificationEmailCodeResponse {
+        // 等待同邮箱事务结束后，后续查询必须能看到它刚提交的记录。
+        (void)db.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+        (void)db.execute(R"(
+            SELECT pg_advisory_xact_lock(hashtextextended(
+                'register-email-code:' || lower(btrim($1::text)), 0))
+        )", std::span{parameters}.first<1>());
+
+        // users 没有 email 列，登录邮箱由密码凭据表维护。
+        const auto registered = db.execute(R"(
+            SELECT 1
+            FROM app.password_credentials AS p
+            JOIN app.users AS u ON u.id = p.user_id
+            WHERE lower(p.login_email) = lower(btrim($1::text))
+            LIMIT 1
+        )", std::span{parameters}.first<1>());
+        if (registered.rowCount() != 0) return GetVerificationEmailCodeResponse::EmailRegistered;
+
+        // 用创建时间限流，邮件还没发送完成的申请也占用一分钟窗口。
+        const auto recent = db.execute(R"(
+            SELECT 1
+            FROM app.email_verification_codes
+            WHERE email = lower(btrim($1::text)) AND purpose = 'register'
+              AND created_at > clock_timestamp() - INTERVAL '1 minute'
+            LIMIT 1
+        )", std::span{parameters}.first<1>());
+        if (recent.rowCount() != 0) return GetVerificationEmailCodeResponse::ToMuchRequest;
+
+        // 不记录验证码明文。邮件成功提交后，发送流程再更新 last_sent_at。
+        const auto inserted = db.execute(R"(
+            INSERT INTO app.email_verification_codes (
+                email, purpose, code_digest, created_at, expires_at
+            )
+            VALUES (
+                lower(btrim($1::text)), 'register', decode($2::text, 'hex'),
+                clock_timestamp(), clock_timestamp() + INTERVAL '5 minutes'
+            )
+            RETURNING id
+        )", parameters);
+        if (inserted.rowCount() != 1) throw std::runtime_error("Failed to create email verification record");
+        return GetVerificationEmailCodeResponse::Send;
+    });
+}
+EmailCodeVerificationResult UserRepository::verifyEmailCode(const std::string& email, const std::string& code_digest_hex) {
+    backend::logging::Scope operationLog{"UserRepository", "verifyEmailCode"};
+    if (code_digest_hex.size() != 64 || code_digest_hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        throw std::invalid_argument("Verification code digest must be 64 hexadecimal characters");
+    }
+    const std::string parameters[] = {email, code_digest_hex};
+    ConnectionLease lease{databasePool_};
+    auto& db = lease.connection();
+    return db.withTransaction([&]() -> EmailCodeVerificationResult {
+        (void)db.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+        (void)db.execute(R"(
+            SELECT pg_advisory_xact_lock(hashtextextended(
+                'register-email-code:' || lower(btrim($1::text)), 0))
+        )", std::span{parameters}.first<1>());
+        // 保留所有未消费记录，区分已过期、次数耗尽和摘要不匹配。
+        const auto records = db.execute(R"(
+            SELECT id, expires_at > clock_timestamp(), attempt_count < max_attempts,
+                   code_digest = decode($2::text, 'hex')
+            FROM app.email_verification_codes
+            WHERE email = lower(btrim($1::text)) AND purpose = 'register' AND consumed_at IS NULL
+            ORDER BY created_at DESC, id DESC
+            FOR UPDATE
+        )", parameters);
+        bool unexpired = false;
+        bool available = false;
+        for (std::size_t row = 0; row < records.rowCount(); ++row) {
+            if (records.value(row, 1) != "t") continue;
+            unexpired = true;
+            if (records.value(row, 2) != "t") continue;
+            available = true;
+            if (records.value(row, 3) == "t") {
+                return {VerifyEmailCodeResponse::Verified, parseId(records.value(row, 0))};
+            }
+        }
+        if (!unexpired) return {VerifyEmailCodeResponse::CodeExpired};
+        if (!available) return {VerifyEmailCodeResponse::ToMuchTry};
+
+        // attempt_count 是已用次数；加 1 即剩余次数减 1。失败尝试正常提交。
+        // 任意记录都可匹配，因此一次错误对所有仍有效的候选记录统一扣减。
+        (void)db.execute(R"(
+            UPDATE app.email_verification_codes SET attempt_count = attempt_count + 1
+            WHERE email = lower(btrim($1::text)) AND purpose = 'register' AND consumed_at IS NULL
+              AND expires_at > clock_timestamp() AND attempt_count < max_attempts
+        )", std::span{parameters}.first<1>());
+        return {VerifyEmailCodeResponse::CodeDoNotMatch};
+    });
 }
