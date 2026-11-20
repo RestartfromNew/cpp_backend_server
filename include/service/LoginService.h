@@ -3,6 +3,7 @@
 #include "repository/UserRepository.h"
 #include <string>
 #include "service/LoginTicketService.h"
+#include "boost/uuid/uuid.hpp"
 
 enum class LoginError {
     TooManyRequests, NoUserFound, InvalidCredentials, InternalError,
@@ -12,6 +13,10 @@ enum class LoginError {
 struct LoginServiceResult {
     LoginError login;
     std::optional<std::string> login_ticket = std::nullopt;
+    boost::uuids::uuid id{};
+    std::string email{};
+    std::string display_name{};
+    std::string username{};
 };
 /** @brief 验证密码与账号状态后签发短期 ticket；不直接签发正式 Token。数据库异常交 HTTP 边界处理。 */
 class LoginService {

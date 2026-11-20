@@ -303,10 +303,10 @@ finally {
 成功200：
 
 ```json
-{"code":"login_success","login_ticket":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","expires_in":300}
+{"code":"login_success","login_ticket":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","expires_in":300,"id":"0776df58-9cbe-4f81-b613-4439f6c3b566","email":"alice@example.com","display_name":"Alice","username":"alice_chat01"}
 ```
 
-ticket示例仅说明64个小写hex字符的格式，不是可用凭据。客户端必须使用本次响应中的真实值。expires_in单位为秒，期限由数据库签发时刻决定，不会因客户端收到较晚而顺延。成功响应不包含正式Token、用户ID、username或device_status。
+ticket示例仅说明64个小写hex字符的格式，不是可用凭据。客户端必须使用本次响应中的真实值。expires_in单位为秒，期限由数据库签发时刻决定，不会因客户端收到较晚而顺延。成功响应返回数据库确认的 `id`、`email`、`display_name` 和 `username`。`id` 为用户 UUID，`email` 来自密码凭据中的登录邮箱，名称字段来自用户表，仅密码及账号校验成功后返回。原有 ticket 字段保留，正式 Token 和 device_status 仍在后续设备登录完成时返回；Auth 和设备验证响应保持原样。
 
 | HTTP | code | 条件 |
 |---|---|---|

@@ -58,7 +58,8 @@ std::optional<PasswordLoginRecord> UserRepository::FindLoginRecordByEmail(const 
             u.display_name,
             u.is_active,
             p.password_hash,
-            u.username
+            u.username,
+            p.login_email
         FROM app.password_credentials AS p
         JOIN app.users AS u
             ON u.id = p.user_id
@@ -75,7 +76,8 @@ std::optional<PasswordLoginRecord> UserRepository::FindLoginRecordByEmail(const 
         .display_name = std::string{result.value(0, 1)},
         .is_active = (result.value(0, 2) == "t"),
         .password_hash = std::string{result.value(0, 3)},
-        .username = std::string{result.value(0, 4)}
+        .username = std::string{result.value(0, 4)},
+        .email = std::string{result.value(0, 5)}
     };
 }
 std::optional<std::string> UserRepository::FindLoginRecordByUserId(const boost::uuids::uuid &user_id) {

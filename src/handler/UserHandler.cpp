@@ -362,7 +362,9 @@ HttpResponse UserHandler::LoginByEmail(const HttpRequest& request) {
                 if (!result.login_ticket) return makeResult(HttpStatus::Internal_Server_Error, "internal_error");
                 auto response = makeResult(HttpStatus::Ok, "login_success");
                 response.body = nlohmann::json{{"code", "login_success"},
-                    {"login_ticket", *result.login_ticket}, {"expires_in", 300}}.dump();
+                    {"login_ticket", *result.login_ticket}, {"expires_in", 300},
+                    {"id", boost::uuids::to_string(result.id)}, {"email", result.email},
+                    {"display_name", result.display_name}, {"username", result.username}}.dump();
                 return response;
             }
             case LoginError::NoUserFound:

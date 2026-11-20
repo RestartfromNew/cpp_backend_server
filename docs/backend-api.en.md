@@ -301,10 +301,10 @@ Public endpoint; no Authorization needed. Supply email/password only. Legacy dev
 Success200:
 
 ```json
-{"code":"login_success","login_ticket":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","expires_in":300}
+{"code":"login_success","login_ticket":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","expires_in":300,"id":"0776df58-9cbe-4f81-b613-4439f6c3b566","email":"alice@example.com","display_name":"Alice","username":"alice_chat01"}
 ```
 
-The example ticket illustrates64 lowercase hex characters, not a usable credential. Use the actual response value. expires_in is seconds from database issuance, not from client receipt. No final tokens, user ID, username or device_status are returned.
+The example ticket illustrates64 lowercase hex characters, not a usable credential. Use the actual response value. expires_in is seconds from database issuance, not from client receipt. Success also returns database-confirmed `id`, `email`, `display_name` and `username` after password and account checks. The email comes from stored password credentials and the names come from the user record. Existing ticket fields remain. Final tokens and device_status are returned on device login completion. Auth behavior and device verification responses are unchanged.
 
 | HTTP | code | Condition |
 |---|---|---|

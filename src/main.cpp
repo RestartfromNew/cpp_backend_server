@@ -311,7 +311,7 @@ int main()
         router.addRoute(
             HttpMethod::GET,
             "/check_registration_availability",
-            // 公开查询邮箱或用户名是否已被注册。
+            //这里进行修改，登录之后将不会返回access token和refresh_token
             [&userHandler](const HttpRequest& request)->HttpResponse {
                 //返回一个HttpResponse
                 HttpResponse response=userHandler.CheckRegistrationAvailaility(request);

@@ -32,6 +32,7 @@ struct PasswordLoginRecord {
     bool is_active;
     std::string password_hash;
     std::string username;
+    std::string email; // 从密码凭据读取的登录邮箱。
 };
 
 

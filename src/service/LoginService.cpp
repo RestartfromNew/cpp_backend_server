@@ -31,5 +31,7 @@ LoginServiceResult LoginService::loginByEmail(const std::string &email, const st
     auto ticket = tickets_.issue(password_login_record->id);
     if (!ticket) return LoginServiceResult{LoginError::NotActiveUser};
     backend::logging::Logger::write(backend::logging::Level::Info, "login", "ticket_issued");
-    return LoginServiceResult{LoginError::Success, std::move(ticket)};
+    // 仅密码验证、账号检查和 ticket 签发成功后返回数据库中的用户资料。
+    return LoginServiceResult{LoginError::Success, std::move(ticket), password_login_record->id,
+        password_login_record->email, password_login_record->display_name, password_login_record->username};
 }

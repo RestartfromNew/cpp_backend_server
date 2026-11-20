@@ -9,7 +9,9 @@ int main(){
  require(login.loginByEmail("u","bad").login==LoginError::InvalidCredentials&&pool.connection.tickets.empty());
  users.exists=false;require(login.loginByEmail("u","password").login==LoginError::NoUserFound);users.exists=true;users.row.is_active=false;require(login.loginByEmail("u","password").login==LoginError::NotActiveUser);users.row.is_active=true;
  auto l=login.loginByEmail("u","password");require(l.login==LoginError::Success&&l.login_ticket&&l.login_ticket->size()==64&&pool.connection.tokens==0);require(!pool.connection.tickets.contains(*l.login_ticket));
+ require(l.id==user&&l.email=="alice@example.com"&&l.display_name=="Alice"&&l.username=="alice_chat01");
  auto done=tickets.verifyDevice(*l.login_ticket,device);require(done.result.status==LoginTicketStatus::Success&&!done.access_token.empty()&&!done.refresh_token.empty()&&pool.connection.tokens==1);require(tickets.verifyDevice(*l.login_ticket,device).result.status==LoginTicketStatus::InvalidTicket);
+ 
  require(tickets.verifyDevice("bad",device).result.status==LoginTicketStatus::InvalidTicket);
  auto issue=[&]{return *tickets.issue(user);};auto key=[](const std::string& ticket){return "hashed:login-ticket-v1:"+ticket;};
  auto t=issue();pool.connection.tickets[key(t)].expired=true;require(tickets.verifyDevice(t,device).result.status==LoginTicketStatus::InvalidTicket);
